@@ -1,5 +1,8 @@
 use serde::Serialize;
+use std::ffi::OsString;
 use std::io::{BufRead, BufReader};
+use std::os::windows::ffi::OsStringExt;
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -7,6 +10,36 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
+
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+const TH32CS_SNAPPROCESS: u32 = 0x0000_0002;
+const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+const STILL_ACTIVE: u32 = 259;
+const INVALID_HANDLE_VALUE: isize = -1;
+
+#[repr(C)]
+struct ProcessEntry32W {
+    dw_size: u32,
+    cnt_usage: u32,
+    th32_process_id: u32,
+    th32_default_heap_id: usize,
+    th32_module_id: u32,
+    cnt_threads: u32,
+    th32_parent_process_id: u32,
+    pc_pri_class_base: i32,
+    dw_flags: u32,
+    sz_exe_file: [u16; 260],
+}
+
+#[link(name = "kernel32")]
+extern "system" {
+    fn CreateToolhelp32Snapshot(dw_flags: u32, th32_process_id: u32) -> isize;
+    fn Process32FirstW(h_snapshot: isize, lppe: *mut ProcessEntry32W) -> i32;
+    fn Process32NextW(h_snapshot: isize, lppe: *mut ProcessEntry32W) -> i32;
+    fn OpenProcess(desired_access: u32, inherit_handle: i32, process_id: u32) -> isize;
+    fn GetExitCodeProcess(h_process: isize, lp_exit_code: *mut u32) -> i32;
+    fn CloseHandle(h_object: isize) -> i32;
+}
 
 static MONITOR_STOP: Mutex<Option<Arc<AtomicBool>>> = Mutex::new(None);
 
@@ -105,6 +138,7 @@ pub fn start_monitoring(app: AppHandle, game_id: String, launch_target: String) 
             ])
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
             .spawn()
         {
             Ok(c) => c,
@@ -208,47 +242,89 @@ fn parse_presentmon_fps(line: &str, ms_col: Option<usize>) -> Option<f64> {
 }
 
 fn find_pid_by_exe(exe_name: &str) -> Option<u32> {
-    let out = Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-Command",
-            &format!(
-                "Get-Process | Where-Object {{ $_.Path -and ($_.Path -like '*\\{}') }} | Select-Object -First 1 -ExpandProperty Id",
-                exe_name.replace('\'', "''")
-            ),
-        ])
-        .output()
-        .ok()?;
-    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    s.parse().ok()
+    find_pid_by_name(exe_name)
 }
 
 fn find_pid_by_stem(stem: &str) -> Option<u32> {
-    let out = Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-Command",
-            &format!(
-                "(Get-Process -Name '{}' -ErrorAction SilentlyContinue | Select-Object -First 1).Id",
-                stem.replace('\'', "''")
-            ),
-        ])
-        .output()
-        .ok()?;
-    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    s.parse().ok()
+    // Toolhelp reports the image name (often with .exe); accept stem or stem.exe.
+    find_pid_by_name(stem).or_else(|| find_pid_by_name(&format!("{stem}.exe")))
+}
+
+fn find_pid_by_name(name: &str) -> Option<u32> {
+    if name.is_empty() {
+        return None;
+    }
+    for_each_process(|pid, exe| {
+        if exe.eq_ignore_ascii_case(name) {
+            Some(pid)
+        } else {
+            None
+        }
+    })
+}
+
+fn for_each_process<F>(mut f: F) -> Option<u32>
+where
+    F: FnMut(u32, &str) -> Option<u32>,
+{
+    unsafe {
+        let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snap == 0 || snap == INVALID_HANDLE_VALUE {
+            return None;
+        }
+
+        let mut entry = ProcessEntry32W {
+            dw_size: std::mem::size_of::<ProcessEntry32W>() as u32,
+            cnt_usage: 0,
+            th32_process_id: 0,
+            th32_default_heap_id: 0,
+            th32_module_id: 0,
+            cnt_threads: 0,
+            th32_parent_process_id: 0,
+            pc_pri_class_base: 0,
+            dw_flags: 0,
+            sz_exe_file: [0; 260],
+        };
+
+        let mut found = None;
+        if Process32FirstW(snap, &mut entry) != 0 {
+            loop {
+                let len = entry
+                    .sz_exe_file
+                    .iter()
+                    .position(|&c| c == 0)
+                    .unwrap_or(entry.sz_exe_file.len());
+                let exe = OsString::from_wide(&entry.sz_exe_file[..len]);
+                if let Some(exe) = exe.to_str() {
+                    if let Some(pid) = f(entry.th32_process_id, exe) {
+                        found = Some(pid);
+                        break;
+                    }
+                }
+                if Process32NextW(snap, &mut entry) == 0 {
+                    break;
+                }
+            }
+        }
+        CloseHandle(snap);
+        found
+    }
 }
 
 fn pid_alive(pid: u32) -> bool {
-    Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-Command",
-            &format!("(Get-Process -Id {pid} -ErrorAction SilentlyContinue) -ne $null"),
-        ])
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "True")
-        .unwrap_or(false)
+    if pid == 0 {
+        return false;
+    }
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle == 0 || handle == INVALID_HANDLE_VALUE {
+            return false;
+        }
+        let mut code = 0u32;
+        let ok = GetExitCodeProcess(handle, &mut code);
+        CloseHandle(handle);
+        ok != 0 && code == STILL_ACTIVE
+    }
 }
 
 fn tools_dir() -> PathBuf {

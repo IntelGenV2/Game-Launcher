@@ -571,6 +571,53 @@
   color: var(--text-dim);
 }
 
+.update-field .update-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.65rem;
+}
+
+.update-version {
+  font-size: 0.9rem;
+  color: var(--text-muted);
+}
+
+.update-available {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.55rem;
+  margin-top: 0.35rem;
+}
+
+.update-ok {
+  color: rgba(62, 207, 142, 0.95) !important;
+}
+
+.update-error {
+  color: #ff8f8f !important;
+}
+
+.linkish {
+  appearance: none;
+  border: 0;
+  background: none;
+  padding: 0;
+  margin-top: 0.35rem;
+  color: rgba(120, 180, 255, 0.95);
+  font: inherit;
+  font-size: 0.8rem;
+  text-align: left;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.linkish:hover {
+  color: #fff;
+}
+
 .settings-actions {
   display: flex;
   justify-content: flex-end;

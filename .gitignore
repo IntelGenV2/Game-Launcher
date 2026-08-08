@@ -12,6 +12,18 @@ dist
 dist-ssr
 *.local
 
+# Rust / Tauri build output (multi-GB — never push)
+src-tauri/target
+
+# Generated updater upload folder
+release-assets/
+
+# Never commit updater private keys
+*.key
+!*.key.pub
+.env
+.env.*
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

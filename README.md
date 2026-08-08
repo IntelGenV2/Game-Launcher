@@ -8,6 +8,7 @@ A Windows desktop launcher that pulls your games from multiple stores into one t
 - Clickable cover art to launch
 - Search, store filters, favorites
 - Playtime & last played (imports Steam playtime when available; tracks sessions launched from this app)
+- In-app updates from **GitHub Releases** (Settings → Check for updates)
 - Glass / acrylic UI (Windows acrylic where supported)
 
 ## Prerequisites
@@ -18,52 +19,57 @@ A Windows desktop launcher that pulls your games from multiple stores into one t
 
 ## Run
 
-From a normal PowerShell (sets up the MSVC toolchain automatically):
-
 ```powershell
+npm install
 .\scripts\dev.ps1
 ```
 
-Or manually:
+Or:
 
 ```bash
 npm install
 npm run tauri dev
 ```
 
-(If `link.exe` / `kernel32.lib` errors appear, open an “x64 Native Tools Command Prompt for VS” or run `.\scripts\dev.ps1`.)
-
 ## Build
 
-```bash
+```powershell
+npm install
 npm run tauri build
 ```
+
+## Updates (GitHub)
+
+Step-by-step: **[UPDATES.md](./UPDATES.md)**
+
+1. Build with the signing key loaded (see UPDATES.md)
+2. Run `.\scripts\make-latest-json.ps1 -GitHubRepoUrl "https://github.com/IntelGenV2/Game-Launcher"`
+3. Create a GitHub Release tagged `vX.Y.Z` and upload the three files from `release-assets`
+
+Repo: [IntelGenV2/Game-Launcher](https://github.com/IntelGenV2/Game-Launcher) (must stay public)
 
 ## Cover art
 
 Covers are fetched automatically from (in order):
 
-1. Steam store app details (works for modern Steam titles like PEAK / RV There Yet)
-2. Epic store-content API (Fortnite and other Epic games)
+1. Steam store app details
+2. Epic store-content API
 3. Wikipedia game pages
-4. SteamGridDB (optional free API key in Settings — improves match rate further)
+4. SteamGridDB (optional free API key in Settings)
 
 You can also **Set cover art…** on any game; the image is copied into app storage.
 
 ## FPS
 
-While a game is running, the launcher captures live FPS with Intel PresentMon (downloaded once into the app data folder). Charts update from those samples.
+While a game is running, the launcher captures live FPS with Intel PresentMon (downloaded once into the app data folder).
 
 ## Data location
 
-Library database and cached covers live under:
-
 `%APPDATA%\IntelLauncher\`
-
-(Older installs under `%APPDATA%\UnifiedGameLauncher\` are moved here automatically on launch.)
 
 ## Notes
 
 - Launching often briefly opens the store client (Steam/Epic/etc.) — that is normal.
 - Xbox / Microsoft Store discovery is best-effort and may miss UWP-only titles.
 - Games removed from disk are marked **Missing** but keep favorites and playtime history.
+- Do not commit `node_modules`, `src-tauri/target`, or the updater private `.key` file.
