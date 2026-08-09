@@ -160,9 +160,11 @@ pub fn start_monitoring(app: AppHandle, game_id: String, launch_target: String) 
                     break;
                 }
                 if ms_col.is_none() && line.to_lowercase().contains("msbetweenpresents") {
-                    ms_col = line
-                        .split(',')
-                        .position(|c| c.trim().trim_matches('"').eq_ignore_ascii_case("msBetweenPresents"));
+                    ms_col = line.split(',').position(|c| {
+                        c.trim()
+                            .trim_matches('"')
+                            .eq_ignore_ascii_case("msBetweenPresents")
+                    });
                     continue;
                 }
                 if let Some(fps) = parse_presentmon_fps(&line, ms_col) {

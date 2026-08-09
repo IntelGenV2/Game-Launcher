@@ -87,7 +87,9 @@ pub fn scan() -> Result<Vec<DiscoveredGame>> {
                 }
             }
             // Detect .product.db sibling indicator
-            if path.join(".product.db").exists() || dir.join(format!("{folder}/.product.db")).exists() {
+            if path.join(".product.db").exists()
+                || dir.join(format!("{folder}/.product.db")).exists()
+            {
                 let code = folder.to_lowercase().replace(' ', "_");
                 if seen.insert(code.clone()) {
                     let name = known_products()

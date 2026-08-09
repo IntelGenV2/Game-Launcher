@@ -87,11 +87,16 @@ fn is_elevation_required(err: &std::io::Error) -> bool {
 fn spawn_elevated(path: &str, dir: &Path) -> Result<()> {
     let path_ps = path.replace('\'', "''");
     let dir_ps = dir.to_string_lossy().replace('\'', "''");
-    let script = format!(
-        "Start-Process -FilePath '{path_ps}' -WorkingDirectory '{dir_ps}' -Verb RunAs"
-    );
+    let script =
+        format!("Start-Process -FilePath '{path_ps}' -WorkingDirectory '{dir_ps}' -Verb RunAs");
     Command::new("powershell")
-        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &script])
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &script,
+        ])
         .creation_flags(CREATE_NO_WINDOW)
         .spawn()
         .context("failed to launch elevated executable")?;

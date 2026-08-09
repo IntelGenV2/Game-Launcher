@@ -60,14 +60,24 @@ pub fn scan() -> Result<Vec<DiscoveredGame>> {
             .map(|s| s.to_string());
 
         let launch_target = if !app_name.is_empty() {
-            format!("com.epicgames.launcher://apps/{}?action=launch&silent=true", app_name)
+            format!(
+                "com.epicgames.launcher://apps/{}?action=launch&silent=true",
+                app_name
+            )
         } else if let (Some(loc), Some(exe)) = (&install_location, &launch_exe) {
             PathBuf::from(loc).join(exe).to_string_lossy().to_string()
         } else {
             continue;
         };
 
-        let id = format!("epic:{}", if catalog_id.is_empty() { &app_name } else { &catalog_id });
+        let id = format!(
+            "epic:{}",
+            if catalog_id.is_empty() {
+                &app_name
+            } else {
+                &catalog_id
+            }
+        );
         games.push(DiscoveredGame {
             id,
             name: display_name,

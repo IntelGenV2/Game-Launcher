@@ -68,7 +68,9 @@ pub fn end_play_session(
     avg_fps: Option<f64>,
 ) -> Result<Game, String> {
     fps::stop_monitoring();
-    with_db(&state, |db| db.end_session_and_add_playtime(&id, minutes, avg_fps))
+    with_db(&state, |db| {
+        db.end_session_and_add_playtime(&id, minutes, avg_fps)
+    })
 }
 
 #[tauri::command]
@@ -279,8 +281,7 @@ pub fn get_cover_data_urls(
     ids: Option<Vec<String>>,
 ) -> Result<std::collections::HashMap<String, String>, String> {
     let games = with_db(&state, |db| db.list_games(true))?;
-    let filter: Option<std::collections::HashSet<String>> =
-        ids.map(|v| v.into_iter().collect());
+    let filter: Option<std::collections::HashSet<String>> = ids.map(|v| v.into_iter().collect());
 
     let mut out = std::collections::HashMap::new();
     for g in games {

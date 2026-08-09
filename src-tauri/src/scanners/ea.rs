@@ -206,7 +206,10 @@ fn find_game_exe(dir: &Path) -> Option<String> {
         .unwrap_or_default()
         .to_string_lossy()
         .to_lowercase();
-    let compact: String = folder.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+    let compact: String = folder
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect();
 
     let mut exes: Vec<(i32, PathBuf)> = WalkDir::new(dir)
         .max_depth(3)
@@ -227,7 +230,8 @@ fn find_game_exe(dir: &Path) -> Option<String> {
                 .to_lowercase();
             let compact_exe: String = n.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
             let mut score = 0i32;
-            if !compact.is_empty() && (compact_exe.contains(&compact) || compact.contains(&compact_exe))
+            if !compact.is_empty()
+                && (compact_exe.contains(&compact) || compact.contains(&compact_exe))
             {
                 score -= 40;
             }

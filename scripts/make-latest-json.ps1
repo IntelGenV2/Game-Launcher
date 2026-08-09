@@ -33,10 +33,10 @@ if (-not (Test-Path $sigPath)) {
 }
 
 $signature = (Get-Content $sigPath -Raw).Trim()
-$fileName = $setup.Name
-$encoded = [uri]::EscapeDataString($fileName)
-# GitHub release asset URL for tag v{version}
-$url = "$repo/releases/download/v$Version/$encoded"
+# GitHub's web upload replaces spaces with '.' in asset names — use that form so
+# the updater URL matches what ends up on the Release.
+$uploadName = $setup.Name -replace ' ', '.'
+$url = "$repo/releases/download/v$Version/$uploadName"
 
 if (-not $OutDir) {
   $OutDir = Join-Path $root "release-assets"
@@ -56,18 +56,22 @@ $manifest = [ordered]@{
   }
 }
 
-$manifest | ConvertTo-Json -Depth 6 | Set-Content -Path $out -Encoding utf8
+$json = $manifest | ConvertTo-Json -Depth 6
+# Windows PowerShell's utf8 encoding adds a BOM that breaks Tauri's JSON parser.
+$utf8NoBom = New-Object System.Text.UTF8Encoding $false
+[System.IO.File]::WriteAllText($out, $json, $utf8NoBom)
 
-# Copy installer + sig next to latest.json for easy upload
-Copy-Item $setup.FullName (Join-Path $OutDir $fileName) -Force
-Copy-Item $sigPath (Join-Path $OutDir "$fileName.sig") -Force
+# Copy installer + sig using GitHub-safe names (no spaces)
+Copy-Item $setup.FullName (Join-Path $OutDir $uploadName) -Force
+Copy-Item $sigPath (Join-Path $OutDir "$uploadName.sig") -Force
 
 Write-Host ""
 Write-Host "Wrote assets to: $OutDir"
-Write-Host "  $fileName"
-Write-Host "  $fileName.sig"
+Write-Host "  $uploadName"
+Write-Host "  $uploadName.sig"
 Write-Host "  latest.json"
 Write-Host ""
 Write-Host "Create a GitHub Release tagged v$Version and upload those three files."
+Write-Host "(Filenames use dots instead of spaces so GitHub URLs match.)"
 Write-Host "Updater URL the app checks:"
 Write-Host "  $repo/releases/latest/download/latest.json"

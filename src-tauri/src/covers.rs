@@ -71,7 +71,11 @@ pub fn ensure_cover(game: &Game, api_key: Option<&str>) -> Result<Option<CoverFe
                 return Ok(Some(done(&dest, resolved_steam)));
             }
         }
-        for suffix in ["library_600x900_2x.jpg", "library_600x900.jpg", "portrait.png"] {
+        for suffix in [
+            "library_600x900_2x.jpg",
+            "library_600x900.jpg",
+            "portrait.png",
+        ] {
             for base in [
                 format!("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{app_id}/{suffix}"),
                 format!("https://cdn.cloudflare.steamstatic.com/steam/apps/{app_id}/{suffix}"),
@@ -270,8 +274,18 @@ fn image_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
             // SOF0..SOF3, SOF5..SOF7, SOF9..SOF11, SOF13..SOF15
             if matches!(
                 marker,
-                0xC0 | 0xC1 | 0xC2 | 0xC3 | 0xC5 | 0xC6 | 0xC7 | 0xC9 | 0xCA | 0xCB | 0xCD
-                    | 0xCE | 0xCF
+                0xC0 | 0xC1
+                    | 0xC2
+                    | 0xC3
+                    | 0xC5
+                    | 0xC6
+                    | 0xC7
+                    | 0xC9
+                    | 0xCA
+                    | 0xCB
+                    | 0xCD
+                    | 0xCE
+                    | 0xCF
             ) && i + 8 < bytes.len()
             {
                 let h = u16::from_be_bytes([bytes[i + 5], bytes[i + 6]]) as u32;
@@ -346,9 +360,7 @@ fn steam_library_capsule_urls(app_id: &str) -> Result<Vec<String>> {
             if is_background_url(file) {
                 continue;
             }
-            let path = fmt
-                .replace("${FILENAME}", file)
-                .replace("{appid}", app_id);
+            let path = fmt.replace("${FILENAME}", file).replace("{appid}", app_id);
             for host in [
                 "https://shared.akamai.steamstatic.com/store_item_assets/",
                 "https://shared.fastly.steamstatic.com/store_item_assets/",
@@ -381,7 +393,9 @@ fn steam_store_search(name: &str) -> Result<Option<String>> {
         let matched = item_name.eq_ignore_ascii_case(name)
             || item_l == name_l
             || (!name_c.is_empty() && item_c == name_c)
-            || (!name_c.is_empty() && name_c.len() >= 5 && (item_c.starts_with(&name_c) || name_c.starts_with(&item_c)))
+            || (!name_c.is_empty()
+                && name_c.len() >= 5
+                && (item_c.starts_with(&name_c) || name_c.starts_with(&item_c)))
             || (name_l.len() > 3 && item_l.starts_with(&name_l));
         if matched {
             if let Some(id) = item.get("id").and_then(|v| v.as_u64()) {
@@ -508,7 +522,11 @@ fn wikipedia_cover(name: &str) -> Result<Option<String>> {
             .and_then(|v| v.as_array())
             .map(|arr| {
                 arr.iter()
-                    .filter_map(|i| i.get("title").and_then(|t| t.as_str()).map(|s| s.to_string()))
+                    .filter_map(|i| {
+                        i.get("title")
+                            .and_then(|t| t.as_str())
+                            .map(|s| s.to_string())
+                    })
                     .collect()
             })
             .unwrap_or_default();

@@ -52,7 +52,11 @@ fn find_exe_in_dir(dir: &Path) -> Option<String> {
         }
     }
     exes.sort_by_key(|p| {
-        let n = p.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
+        let n = p
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_lowercase();
         let penalty = if n.contains("unins") || n.contains("setup") || n.contains("crash") {
             1
         } else {

@@ -25,9 +25,7 @@ pub fn scan() -> Result<Vec<DiscoveredGame>> {
         for exe_name in ["RobloxPlayerBeta.exe", "RobloxPlayer.exe"] {
             let exe = path.join(exe_name);
             if exe.exists() {
-                let modified = fs::metadata(&exe)
-                    .and_then(|m| m.modified())
-                    .ok();
+                let modified = fs::metadata(&exe).and_then(|m| m.modified()).ok();
                 if newest.is_none() || modified > newest {
                     newest = modified;
                     player = Some(exe);

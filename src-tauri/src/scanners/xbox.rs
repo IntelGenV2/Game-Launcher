@@ -72,7 +72,13 @@ fn xbox_roots() -> Vec<PathBuf> {
 
 fn slug(name: &str) -> String {
     name.chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
         .collect::<String>()
         .trim_matches('_')
         .to_string()
@@ -118,7 +124,11 @@ fn find_best_exe(game_dir: &Path, game_name: &str) -> Option<String> {
             continue;
         }
         let depth = if dir == game_dir { 2 } else { 3 };
-        for entry in WalkDir::new(dir).max_depth(depth).into_iter().filter_map(|e| e.ok()) {
+        for entry in WalkDir::new(dir)
+            .max_depth(depth)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
             let path = entry.into_path();
             if !path
                 .extension()

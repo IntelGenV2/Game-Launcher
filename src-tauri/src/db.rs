@@ -83,7 +83,9 @@ impl Database {
             "#,
         )?;
         // Migrations for existing DBs
-        let _ = self.conn.execute("ALTER TABLE sessions ADD COLUMN avg_fps REAL", []);
+        let _ = self
+            .conn
+            .execute("ALTER TABLE sessions ADD COLUMN avg_fps REAL", []);
         let _ = self.conn.execute(
             "ALTER TABLE games ADD COLUMN path_override INTEGER NOT NULL DEFAULT 0",
             [],
@@ -332,7 +334,12 @@ impl Database {
             .ok_or_else(|| anyhow::anyhow!("game not found"))
     }
 
-    pub fn set_cover(&self, id: &str, cover_url: Option<&str>, cover_path: Option<&str>) -> Result<()> {
+    pub fn set_cover(
+        &self,
+        id: &str,
+        cover_url: Option<&str>,
+        cover_path: Option<&str>,
+    ) -> Result<()> {
         // Never clear an existing cover when a field is omitted — only overwrite when provided.
         if cover_url.is_some() && cover_path.is_some() {
             self.conn.execute(
@@ -519,7 +526,9 @@ impl Database {
         let mut daily: BTreeMap<String, i64> = BTreeMap::new();
         let today = Utc::now().date_naive();
         for i in 0..14 {
-            let day = (today - Duration::days(13 - i)).format("%Y-%m-%d").to_string();
+            let day = (today - Duration::days(13 - i))
+                .format("%Y-%m-%d")
+                .to_string();
             daily.insert(day, 0);
         }
         for s in &sessions {
@@ -542,7 +551,9 @@ impl Database {
             0.0
         };
         let avg_fps = {
-            let vals: Vec<f64> = fps_samples.iter().map(|f| f.fps)
+            let vals: Vec<f64> = fps_samples
+                .iter()
+                .map(|f| f.fps)
                 .chain(sessions.iter().filter_map(|s| s.avg_fps))
                 .collect();
             if vals.is_empty() {
@@ -551,7 +562,9 @@ impl Database {
                 Some(vals.iter().sum::<f64>() / vals.len() as f64)
             }
         };
-        let latest_fps = fps_samples.last().map(|f| f.fps)
+        let latest_fps = fps_samples
+            .last()
+            .map(|f| f.fps)
             .or_else(|| sessions.iter().rev().find_map(|s| s.avg_fps));
         let first_played = sessions.first().map(|s| s.started_at.clone());
 
@@ -595,8 +608,10 @@ impl Database {
                 params![key],
             )?;
         } else {
-            self.conn
-                .execute("DELETE FROM settings WHERE key = 'steam_grid_db_api_key'", [])?;
+            self.conn.execute(
+                "DELETE FROM settings WHERE key = 'steam_grid_db_api_key'",
+                [],
+            )?;
         }
         if let Some(sort) = &settings.sort_by {
             self.conn.execute(

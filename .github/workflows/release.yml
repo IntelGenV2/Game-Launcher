@@ -26,12 +26,39 @@ jobs:
       - name: Install frontend deps
         run: npm ci
 
+      - name: Check updater signing secret
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) {
+            throw @"
+          TAURI_SIGNING_PRIVATE_KEY is missing or empty.
+
+          Fix:
+          1. Repo → Settings → Secrets and variables → Actions
+          2. New repository secret (NOT an Environment secret)
+          3. Name: TAURI_SIGNING_PRIVATE_KEY
+          4. Value: entire contents of:
+             $HOME\.tauri\intelgen-game-launcher.key
+             (one long base64 line starting with dW50cnVzdGVk...)
+          5. Do NOT wrap it in quotes
+          "@
+          }
+          $k = $env:TAURI_SIGNING_PRIVATE_KEY.Trim()
+          if (-not $k.StartsWith("dW50cnVzdGVk")) {
+            throw "TAURI_SIGNING_PRIVATE_KEY does not look like a Tauri private key (should start with dW50cnVzdGVk)."
+          }
+          Write-Host "Signing key secret looks present ($($k.Length) chars)."
+
       - name: Build & upload release
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Must be a Repository secret with the full .key file contents
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Key was generated with no password — keep this empty
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         with:
           tagName: v__VERSION__
           releaseName: "IntelGen Game Launcher v__VERSION__"

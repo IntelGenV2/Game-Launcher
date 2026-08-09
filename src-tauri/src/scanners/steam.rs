@@ -132,9 +132,7 @@ fn load_playtimes(steam_path: &Path) -> Result<HashMap<String, i64>> {
     }
     let re = Regex::new(r#""(\d+)"\s*\{[^}]*?"Playtime"\s+"(\d+)""#)?;
     // Broader multiline-ish scan: "appid" { ... "Playtime" "N"
-    let playtime_re = Regex::new(
-        r#"(?s)"(\d+)"\s*\{(?:(?!"\d+"\s*\{).)*?"Playtime"\s+"(\d+)""#,
-    )?;
+    let playtime_re = Regex::new(r#"(?s)"(\d+)"\s*\{(?:(?!"\d+"\s*\{).)*?"Playtime"\s+"(\d+)""#)?;
 
     for entry in fs::read_dir(userdata)? {
         let entry = entry?;
