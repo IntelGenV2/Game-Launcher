@@ -2,7 +2,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check } from "@tauri-apps/plugin-updater";
-import { AppSettings } from "../types";
+import { AppSettings, isThemeId, THEME_OPTIONS, ThemeId } from "../types";
 import { useEffect, useState } from "react";
 
 interface Props {
@@ -11,7 +11,10 @@ interface Props {
   dataPath: string;
   onClose: () => void;
   onSave: (settings: AppSettings) => Promise<void>;
+  onPreviewAppearance: (theme: ThemeId, cardScale: number) => void;
 }
+
+type Section = "appearance" | "library" | "covers" | "updates";
 
 type UpdateStatus =
   | { kind: "idle" }
@@ -24,8 +27,27 @@ type UpdateStatus =
 
 const DOWNLOAD_PAGE = "https://github.com/IntelGenV2/Game-Launcher/releases/latest";
 
-export function SettingsModal({ open, settings, dataPath, onClose, onSave }: Props) {
+const SECTIONS: { id: Section; label: string }[] = [
+  { id: "appearance", label: "Appearance" },
+  { id: "library", label: "Library" },
+  { id: "covers", label: "Covers" },
+  { id: "updates", label: "Updates" },
+];
+
+export function SettingsModal({
+  open,
+  settings,
+  dataPath,
+  onClose,
+  onSave,
+  onPreviewAppearance,
+}: Props) {
+  const [section, setSection] = useState<Section>("appearance");
   const [apiKey, setApiKey] = useState(settings.steamGridDbApiKey ?? "");
+  const [theme, setTheme] = useState<ThemeId>(
+    isThemeId(settings.theme) ? settings.theme : "emerald",
+  );
+  const [cardScale, setCardScale] = useState(settings.cardScale ?? 1);
   const [saving, setSaving] = useState(false);
   const [appVersion, setAppVersion] = useState<string>("…");
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({ kind: "idle" });
@@ -34,13 +56,16 @@ export function SettingsModal({ open, settings, dataPath, onClose, onSave }: Pro
   useEffect(() => {
     if (open) {
       setApiKey(settings.steamGridDbApiKey ?? "");
+      setTheme(isThemeId(settings.theme) ? settings.theme : "emerald");
+      setCardScale(typeof settings.cardScale === "number" ? settings.cardScale : 1);
       setUpdateStatus({ kind: "idle" });
       setPendingUpdate(null);
+      setSection("appearance");
       getVersion()
         .then(setAppVersion)
         .catch(() => setAppVersion("unknown"));
     }
-  }, [open, settings.steamGridDbApiKey]);
+  }, [open, settings]);
 
   if (!open) return null;
 
@@ -108,94 +133,189 @@ export function SettingsModal({ open, settings, dataPath, onClose, onSave }: Pro
     updateStatus.kind === "downloading" ||
     updateStatus.kind === "restarting";
 
+  function previewTheme(next: ThemeId) {
+    setTheme(next);
+    onPreviewAppearance(next, cardScale);
+  }
+
+  function previewScale(next: number) {
+    setCardScale(next);
+    onPreviewAppearance(theme, next);
+  }
+
   return (
-    <div className="settings-backdrop" onClick={onClose}>
+    <div
+      className="settings-backdrop"
+      onClick={() => {
+        onPreviewAppearance(
+          isThemeId(settings.theme) ? settings.theme : "emerald",
+          typeof settings.cardScale === "number" ? settings.cardScale : 1,
+        );
+        onClose();
+      }}
+    >
       <div
-        className="settings-panel"
+        className="settings-panel settings-panel-wide"
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
         aria-label="Settings"
       >
         <h2>Settings</h2>
-        <p>
-          Covers for Steam work automatically. Add a SteamGridDB key for Epic/Xbox/EA/etc., or set
-          cover art per game (copied into app storage).
-        </p>
-
-        <div className="field">
-          <label htmlFor="sgdb">SteamGridDB API key</label>
-          <input
-            id="sgdb"
-            type="password"
-            value={apiKey}
-            onChange={(e) => setApiKey(e.target.value)}
-            placeholder="Optional"
-            autoComplete="off"
-          />
-          <span className="hint">Free key at steamgriddb.com/profile/preferences/api</span>
-        </div>
-
-        <div className="field">
-          <label>Library data folder</label>
-          <input type="text" readOnly value={dataPath || "—"} />
-        </div>
-
-        <div className="field update-field">
-          <label>Launcher updates</label>
-          <div className="update-row">
-            <span className="update-version">Installed version {appVersion}</span>
-            <button
-              type="button"
-              className="btn"
-              disabled={busy}
-              onClick={() => void handleCheckUpdate()}
-            >
-              {updateStatus.kind === "checking" ? "Checking…" : "Check for updates"}
-            </button>
-          </div>
-          {updateStatus.kind === "upToDate" && (
-            <span className="hint update-ok">You’re on the latest version.</span>
-          )}
-          {updateStatus.kind === "available" && (
-            <div className="update-available">
-              <span className="hint update-ok">
-                Version {updateStatus.version} is available
-                {updateStatus.notes ? ` — ${updateStatus.notes}` : ""}.
-              </span>
+        <div className="settings-layout">
+          <nav className="settings-nav" aria-label="Settings sections">
+            {SECTIONS.map((s) => (
               <button
+                key={s.id}
                 type="button"
-                className="btn btn-primary"
-                disabled={busy}
-                onClick={() => void handleInstallUpdate()}
+                className={`settings-nav-btn${section === s.id ? " active" : ""}`}
+                onClick={() => setSection(s.id)}
               >
-                Download &amp; install
+                {s.label}
               </button>
-            </div>
-          )}
-          {updateStatus.kind === "downloading" && (
-            <span className="hint">
-              Downloading update
-              {updateStatus.percent != null ? ` (${updateStatus.percent}%)` : "…"}
-            </span>
-          )}
-          {updateStatus.kind === "restarting" && (
-            <span className="hint">Update installed — restarting…</span>
-          )}
-          {updateStatus.kind === "error" && (
-            <span className="hint update-error">{updateStatus.message}</span>
-          )}
-          <button
-            type="button"
-            className="linkish"
-            onClick={() => void openUrl(DOWNLOAD_PAGE)}
-          >
-            Open latest release on GitHub
-          </button>
+            ))}
+          </nav>
+
+          <div className="settings-body">
+            {section === "appearance" && (
+              <>
+                <p className="settings-lead">Theme colors and cover card size.</p>
+                <div className="field">
+                  <label>Theme</label>
+                  <div className="theme-grid">
+                    {THEME_OPTIONS.map((t) => (
+                      <button
+                        key={t.id}
+                        type="button"
+                        className={`theme-swatch${theme === t.id ? " active" : ""}`}
+                        data-theme-preview={t.id}
+                        onClick={() => previewTheme(t.id)}
+                      >
+                        <span className="theme-dot" />
+                        {t.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="field field-scale-row">
+                  <label htmlFor="card-scale">
+                    Card scale <span className="hint-inline">{cardScale.toFixed(2)}×</span>
+                  </label>
+                  <input
+                    id="card-scale"
+                    type="range"
+                    min={0.7}
+                    max={1.4}
+                    step={0.05}
+                    value={cardScale}
+                    onChange={(e) => previewScale(Number(e.target.value))}
+                  />
+                </div>
+              </>
+            )}
+
+            {section === "library" && (
+              <>
+                <p className="settings-lead">Where library data and cached covers are stored.</p>
+                <div className="field">
+                  <label>Library data folder</label>
+                  <input type="text" readOnly value={dataPath || "—"} />
+                </div>
+              </>
+            )}
+
+            {section === "covers" && (
+              <>
+                <p className="settings-lead">
+                  Steam covers work automatically. Add a SteamGridDB key for better Epic/Xbox/EA
+                  matches, or set cover art per game.
+                </p>
+                <div className="field">
+                  <label htmlFor="sgdb">SteamGridDB API key</label>
+                  <input
+                    id="sgdb"
+                    type="password"
+                    value={apiKey}
+                    onChange={(e) => setApiKey(e.target.value)}
+                    placeholder="Optional"
+                    autoComplete="off"
+                  />
+                  <span className="hint">Free key at steamgriddb.com/profile/preferences/api</span>
+                </div>
+              </>
+            )}
+
+            {section === "updates" && (
+              <>
+                <p className="settings-lead">Check GitHub Releases for a newer launcher build.</p>
+                <div className="field update-field">
+                  <div className="update-row">
+                    <span className="update-version">Installed version {appVersion}</span>
+                    <button
+                      type="button"
+                      className="btn"
+                      disabled={busy}
+                      onClick={() => void handleCheckUpdate()}
+                    >
+                      {updateStatus.kind === "checking" ? "Checking…" : "Check for updates"}
+                    </button>
+                  </div>
+                  {updateStatus.kind === "upToDate" && (
+                    <span className="hint update-ok">You’re on the latest version.</span>
+                  )}
+                  {updateStatus.kind === "available" && (
+                    <div className="update-available">
+                      <span className="hint update-ok">
+                        Version {updateStatus.version} is available
+                        {updateStatus.notes ? ` — ${updateStatus.notes}` : ""}.
+                      </span>
+                      <button
+                        type="button"
+                        className="btn btn-primary"
+                        disabled={busy}
+                        onClick={() => void handleInstallUpdate()}
+                      >
+                        Download &amp; install
+                      </button>
+                    </div>
+                  )}
+                  {updateStatus.kind === "downloading" && (
+                    <span className="hint">
+                      Downloading update
+                      {updateStatus.percent != null ? ` (${updateStatus.percent}%)` : "…"}
+                    </span>
+                  )}
+                  {updateStatus.kind === "restarting" && (
+                    <span className="hint">Update installed — restarting…</span>
+                  )}
+                  {updateStatus.kind === "error" && (
+                    <span className="hint update-error">{updateStatus.message}</span>
+                  )}
+                  <button
+                    type="button"
+                    className="linkish"
+                    onClick={() => void openUrl(DOWNLOAD_PAGE)}
+                  >
+                    Open latest release on GitHub
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
         </div>
 
         <div className="settings-actions">
-          <button type="button" className="btn" onClick={onClose}>
+          <button
+            type="button"
+            className="btn"
+            onClick={() => {
+              onPreviewAppearance(
+                isThemeId(settings.theme) ? settings.theme : "emerald",
+                typeof settings.cardScale === "number" ? settings.cardScale : 1,
+              );
+              onClose();
+            }}
+          >
             Cancel
           </button>
           <button
@@ -208,6 +328,8 @@ export function SettingsModal({ open, settings, dataPath, onClose, onSave }: Pro
                 await onSave({
                   ...settings,
                   steamGridDbApiKey: apiKey.trim() || null,
+                  theme,
+                  cardScale,
                 });
                 onClose();
               } finally {

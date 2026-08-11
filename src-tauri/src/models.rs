@@ -62,6 +62,7 @@ pub struct Game {
     pub last_played_at: Option<String>,
     pub date_added: String,
     pub steam_app_id: Option<String>,
+    pub genre: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,6 +82,9 @@ pub struct DiscoveredGame {
 pub struct AppSettings {
     pub steam_grid_db_api_key: Option<String>,
     pub sort_by: Option<String>,
+    pub theme: Option<String>,
+    pub card_scale: Option<f64>,
+    pub library_order: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -99,17 +103,6 @@ pub struct PlaySession {
     pub started_at: String,
     pub ended_at: Option<String>,
     pub duration_minutes: i64,
-    pub avg_fps: Option<f64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FpsSample {
-    pub id: i64,
-    pub game_id: String,
-    pub recorded_at: String,
-    pub fps: f64,
-    pub note: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -128,9 +121,16 @@ pub struct GameStats {
     pub avg_session_minutes: f64,
     pub last_played_at: Option<String>,
     pub first_played_at: Option<String>,
-    pub avg_fps: Option<f64>,
-    pub latest_fps: Option<f64>,
     pub daily_playtime: Vec<DailyPlaytime>,
     pub sessions: Vec<PlaySession>,
-    pub fps_samples: Vec<FpsSample>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GameGroup {
+    pub id: String,
+    pub name: String,
+    pub sort_order: i64,
+    pub created_at: String,
+    pub game_ids: Vec<String>,
 }

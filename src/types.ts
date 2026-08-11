@@ -11,6 +11,21 @@ export type Store =
   | "roblox"
   | "manual";
 
+export type ThemeId = "emerald" | "amber" | "cyan" | "slate" | "crimson";
+
+export type LibraryFilter =
+  | "all"
+  | "favorites"
+  | "hidden"
+  | "steam"
+  | "epic"
+  | "gog"
+  | "xbox"
+  | "ea"
+  | "battlenet"
+  | "ubisoft"
+  | "other";
+
 export interface Game {
   id: string;
   name: string;
@@ -26,11 +41,23 @@ export interface Game {
   lastPlayedAt: string | null;
   dateAdded: string;
   steamAppId: string | null;
+  genre: string | null;
+}
+
+export interface GameGroup {
+  id: string;
+  name: string;
+  sortOrder: number;
+  createdAt: string;
+  gameIds: string[];
 }
 
 export interface AppSettings {
   steamGridDbApiKey: string | null;
   sortBy: string | null;
+  theme: string | null;
+  cardScale: number | null;
+  libraryOrder: string | null;
 }
 
 export interface LibraryStats {
@@ -45,15 +72,6 @@ export interface PlaySession {
   startedAt: string;
   endedAt: string | null;
   durationMinutes: number;
-  avgFps: number | null;
-}
-
-export interface FpsSample {
-  id: number;
-  gameId: string;
-  recordedAt: string;
-  fps: number;
-  note: string | null;
 }
 
 export interface DailyPlaytime {
@@ -68,14 +86,27 @@ export interface GameStats {
   avgSessionMinutes: number;
   lastPlayedAt: string | null;
   firstPlayedAt: string | null;
-  avgFps: number | null;
-  latestFps: number | null;
   dailyPlaytime: DailyPlaytime[];
   sessions: PlaySession[];
-  fpsSamples: FpsSample[];
 }
 
-export type SortMode = "name" | "recent" | "playtime" | "favorites";
+export type SortMode =
+  | "custom"
+  | "name"
+  | "nameDesc"
+  | "recent"
+  | "added"
+  | "playtime"
+  | "favorites"
+  | "missing";
+
+export const THEME_OPTIONS: { id: ThemeId; label: string }[] = [
+  { id: "emerald", label: "Emerald" },
+  { id: "amber", label: "Amber" },
+  { id: "cyan", label: "Cyan" },
+  { id: "slate", label: "Slate" },
+  { id: "crimson", label: "Crimson" },
+];
 
 export const STORE_LABELS: Record<Store, string> = {
   steam: "Steam",
@@ -88,6 +119,119 @@ export const STORE_LABELS: Record<Store, string> = {
   roblox: "Roblox",
   manual: "Manual",
 };
+
+export const FILTER_OPTIONS: { id: LibraryFilter; label: string }[] = [
+  { id: "all", label: "All" },
+  { id: "favorites", label: "Favorites" },
+  { id: "hidden", label: "Hidden" },
+  { id: "steam", label: "Steam" },
+  { id: "epic", label: "Epic" },
+  { id: "gog", label: "GOG" },
+  { id: "xbox", label: "Xbox" },
+  { id: "ea", label: "EA App" },
+  { id: "battlenet", label: "Battle.net" },
+  { id: "ubisoft", label: "Ubisoft" },
+  { id: "other", label: "Other" },
+];
+
+export const SORT_OPTIONS: { id: SortMode; label: string }[] = [
+  { id: "custom", label: "Custom" },
+  { id: "name", label: "A–Z" },
+  { id: "nameDesc", label: "Z–A" },
+  { id: "recent", label: "Recently played" },
+  { id: "added", label: "Recently added" },
+  { id: "playtime", label: "Playtime" },
+  { id: "favorites", label: "Favorites first" },
+  { id: "missing", label: "Missing first" },
+];
+
+export function isSortMode(v: string | null | undefined): v is SortMode {
+  return (
+    v === "custom" ||
+    v === "name" ||
+    v === "nameDesc" ||
+    v === "recent" ||
+    v === "added" ||
+    v === "playtime" ||
+    v === "favorites" ||
+    v === "missing"
+  );
+}
+
+export function gameOrderKey(id: string) {
+  return `game:${id}`;
+}
+
+export function groupOrderKey(id: string) {
+  return `group:${id}`;
+}
+
+export function parseLibraryOrder(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((x): x is string => typeof x === "string");
+  } catch {
+    return [];
+  }
+}
+
+export function buildDefaultLibraryOrder(games: Game[], groups: GameGroup[]): string[] {
+  const grouped = new Set(groups.flatMap((g) => g.gameIds));
+  return [
+    ...groups.map((g) => groupOrderKey(g.id)),
+    ...games.filter((g) => !grouped.has(g.id)).map((g) => gameOrderKey(g.id)),
+  ];
+}
+
+/** Merge saved order with current games/groups (append unknowns, drop missing). */
+export function reconcileLibraryOrder(
+  saved: string[],
+  games: Game[],
+  groups: GameGroup[],
+): string[] {
+  const grouped = new Set(groups.flatMap((g) => g.gameIds));
+  const valid = new Set([
+    ...groups.map((g) => groupOrderKey(g.id)),
+    ...games.filter((g) => !grouped.has(g.id)).map((g) => gameOrderKey(g.id)),
+  ]);
+  const seen = new Set<string>();
+  const next: string[] = [];
+  for (const key of saved) {
+    if (valid.has(key) && !seen.has(key)) {
+      next.push(key);
+      seen.add(key);
+    }
+  }
+  for (const key of valid) {
+    if (!seen.has(key)) next.push(key);
+  }
+  return next;
+}
+
+export function isThemeId(v: string | null | undefined): v is ThemeId {
+  return (
+    v === "emerald" ||
+    v === "amber" ||
+    v === "cyan" ||
+    v === "slate" ||
+    v === "crimson"
+  );
+}
+
+/** Base card min width in px at scale 1. */
+export const CARD_MIN_BASE = 150;
+
+export function cardMinPx(scale: number): number {
+  const s = Math.min(1.4, Math.max(0.7, scale || 1));
+  return Math.round(CARD_MIN_BASE * s);
+}
+
+export function applyAppearance(theme: ThemeId, cardScale: number) {
+  document.documentElement.setAttribute("data-theme", theme);
+  document.documentElement.style.setProperty("--card-min", `${cardMinPx(cardScale)}px`);
+}
 
 export function formatPlaytime(minutes: number): string {
   if (!minutes || minutes <= 0) return "Never played";
@@ -114,8 +258,6 @@ export function formatLastPlayed(iso: string | null): string {
 /** Resolve a displayable cover URL. Local cached art (data URL) wins. */
 export function coverSrc(game: Game, dataUrl?: string | null): string | null {
   if (dataUrl) return dataUrl;
-  // Wait for local data-URL load when we have a cached file — asset protocol is unreliable,
-  // and Steam CDN library_600x900 404s for many modern titles (PEAK, RV There Yet?, …).
   if (game.coverPath) {
     return null;
   }

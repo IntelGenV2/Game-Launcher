@@ -5,10 +5,11 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-/// Result of a successful cover fetch (may also resolve a Steam AppID).
+/// Result of a successful cover fetch (may also resolve a Steam AppID / genre).
 pub struct CoverFetch {
     pub path: String,
     pub steam_app_id: Option<String>,
+    pub genre: Option<String>,
 }
 
 /// Cover selection rules (always enforced):
@@ -16,11 +17,25 @@ pub struct CoverFetch {
 /// 2. Never use headers, heroes, page backgrounds, screenshots, or wide capsules.
 /// 3. After download, reject landscape images (clearly wider than tall).
 pub fn ensure_cover(game: &Game, api_key: Option<&str>) -> Result<Option<CoverFetch>> {
+    let mut resolved_steam: Option<String> = None;
+    let need_genre = game.genre.as_ref().map(|s| s.trim().is_empty()).unwrap_or(true);
+
     if let Some(path) = &game.cover_path {
         if PathBuf::from(path).exists() && is_valid_portrait_file(path) {
+            let genre = if need_genre {
+                resolve_steam_id(game, &mut resolved_steam).and_then(|id| {
+                    steam_app_genres(&id).ok().flatten()
+                })
+            } else {
+                None
+            };
+            if genre.is_none() && resolved_steam.is_none() {
+                return Ok(None);
+            }
             return Ok(Some(CoverFetch {
                 path: path.clone(),
-                steam_app_id: None,
+                steam_app_id: resolved_steam.filter(|_| game.steam_app_id.is_none()),
+                genre,
             }));
         }
         // Stale landscape / background art — replace it
@@ -31,44 +46,40 @@ pub fn ensure_cover(game: &Game, api_key: Option<&str>) -> Result<Option<CoverFe
     let dest = cover_dest_for(&game.id, "jpg");
     if dest.exists() {
         if is_valid_portrait_file(&dest) {
-            return Ok(Some(CoverFetch {
-                path: dest.to_string_lossy().to_string(),
-                steam_app_id: None,
-            }));
+            let genre = if need_genre {
+                resolve_steam_id(game, &mut resolved_steam).and_then(|id| {
+                    steam_app_genres(&id).ok().flatten()
+                })
+            } else {
+                None
+            };
+            return Ok(Some(done(
+                &dest,
+                resolved_steam.filter(|_| game.steam_app_id.is_none()),
+                genre,
+            )));
         }
         let _ = fs::remove_file(&dest);
     }
 
     let search_names = search_name_variants(&game.name);
-    let mut resolved_steam: Option<String> = None;
 
     // 1) Stored cover_url only if it looks like box art (not a background URL)
     if let Some(url) = &game.cover_url {
         if is_box_art_url(url) {
             if try_save_portrait(url, &dest)? {
-                return Ok(Some(done(&dest, None)));
+                let genre = fetch_genre_if_needed(game, &mut resolved_steam, need_genre);
+                return Ok(Some(done(&dest, resolved_steam.clone(), genre)));
             }
         }
     }
 
     // 2) Steam library capsule (known ID → stored ID → name search with normalized variants)
-    let mut steam_id = game.steam_app_id.clone();
-    if steam_id.is_none() {
-        steam_id = known_steam_app_id(&game.name).map(|s| s.to_string());
-    }
-    if steam_id.is_none() {
-        for n in &search_names {
-            if let Some(id) = steam_store_search(n).ok().flatten() {
-                steam_id = Some(id);
-                break;
-            }
-        }
-    }
-    if let Some(app_id) = steam_id.clone() {
-        resolved_steam = Some(app_id.clone());
+    if let Some(app_id) = resolve_steam_id(game, &mut resolved_steam) {
         for url in steam_library_capsule_urls(&app_id)? {
             if try_save_portrait(&url, &dest)? {
-                return Ok(Some(done(&dest, resolved_steam)));
+                let genre = fetch_genre_if_needed(game, &mut resolved_steam, need_genre);
+                return Ok(Some(done(&dest, resolved_steam.clone(), genre)));
             }
         }
         for suffix in [
@@ -82,7 +93,8 @@ pub fn ensure_cover(game: &Game, api_key: Option<&str>) -> Result<Option<CoverFe
                 format!("https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/{app_id}/{suffix}"),
             ] {
                 if try_save_portrait(&base, &dest)? {
-                    return Ok(Some(done(&dest, resolved_steam)));
+                    let genre = fetch_genre_if_needed(game, &mut resolved_steam, need_genre);
+                    return Ok(Some(done(&dest, resolved_steam.clone(), genre)));
                 }
             }
         }
@@ -95,7 +107,8 @@ pub fn ensure_cover(game: &Game, api_key: Option<&str>) -> Result<Option<CoverFe
     {
         if let Some(url) = epic_product_cover(&game.name, &game.launch_target)? {
             if try_save_portrait(&url, &dest)? {
-                return Ok(Some(done(&dest, resolved_steam)));
+                let genre = fetch_genre_if_needed(game, &mut resolved_steam, need_genre);
+                return Ok(Some(done(&dest, resolved_steam.clone(), genre)));
             }
         }
     }
@@ -105,7 +118,8 @@ pub fn ensure_cover(game: &Game, api_key: Option<&str>) -> Result<Option<CoverFe
         for n in &search_names {
             if let Some(url) = microsoft_store_cover(n)? {
                 if try_save_portrait(&url, &dest)? {
-                    return Ok(Some(done(&dest, resolved_steam)));
+                    let genre = fetch_genre_if_needed(game, &mut resolved_steam, need_genre);
+                    return Ok(Some(done(&dest, resolved_steam.clone(), genre)));
                 }
             }
         }
@@ -116,7 +130,8 @@ pub fn ensure_cover(game: &Game, api_key: Option<&str>) -> Result<Option<CoverFe
         for n in &search_names {
             if let Some(url) = steamgriddb_cover(n, key)? {
                 if try_save_portrait(&url, &dest)? {
-                    return Ok(Some(done(&dest, resolved_steam)));
+                    let genre = fetch_genre_if_needed(game, &mut resolved_steam, need_genre);
+                    return Ok(Some(done(&dest, resolved_steam.clone(), genre)));
                 }
             }
         }
@@ -126,7 +141,8 @@ pub fn ensure_cover(game: &Game, api_key: Option<&str>) -> Result<Option<CoverFe
     for n in &search_names {
         if let Some(url) = wikipedia_cover(n)? {
             if is_box_art_url(&url) && try_save_portrait(&url, &dest)? {
-                return Ok(Some(done(&dest, resolved_steam)));
+                let genre = fetch_genre_if_needed(game, &mut resolved_steam, need_genre);
+                return Ok(Some(done(&dest, resolved_steam.clone(), genre)));
             }
         }
     }
@@ -135,7 +151,22 @@ pub fn ensure_cover(game: &Game, api_key: Option<&str>) -> Result<Option<CoverFe
     if matches!(game.store, Store::Roblox) || compact_alnum(&game.name) == "roblox" {
         for url in roblox_cover_urls() {
             if try_save_portrait(url, &dest)? {
-                return Ok(Some(done(&dest, resolved_steam)));
+                let genre = fetch_genre_if_needed(game, &mut resolved_steam, need_genre);
+                return Ok(Some(done(&dest, resolved_steam.clone(), genre)));
+            }
+        }
+    }
+
+    // Cover failed but we may still have resolved genre metadata
+    if need_genre {
+        if let Some(genre) = fetch_genre_if_needed(game, &mut resolved_steam, true) {
+            // Persist genre without a new cover path — use existing path if any
+            if let Some(path) = game.cover_path.clone().filter(|p| PathBuf::from(p).exists()) {
+                return Ok(Some(CoverFetch {
+                    path,
+                    steam_app_id: resolved_steam.filter(|_| game.steam_app_id.is_none()),
+                    genre: Some(genre),
+                }));
             }
         }
     }
@@ -143,10 +174,44 @@ pub fn ensure_cover(game: &Game, api_key: Option<&str>) -> Result<Option<CoverFe
     Ok(None)
 }
 
-fn done(dest: &Path, steam_app_id: Option<String>) -> CoverFetch {
+fn resolve_steam_id(game: &Game, resolved: &mut Option<String>) -> Option<String> {
+    if let Some(id) = resolved.clone() {
+        return Some(id);
+    }
+    let mut steam_id = game.steam_app_id.clone();
+    if steam_id.is_none() {
+        steam_id = known_steam_app_id(&game.name).map(|s| s.to_string());
+    }
+    if steam_id.is_none() {
+        for n in search_name_variants(&game.name) {
+            if let Some(id) = steam_store_search(&n).ok().flatten() {
+                steam_id = Some(id);
+                break;
+            }
+        }
+    }
+    if let Some(id) = steam_id.clone() {
+        *resolved = Some(id.clone());
+    }
+    steam_id
+}
+
+fn fetch_genre_if_needed(
+    game: &Game,
+    resolved: &mut Option<String>,
+    need_genre: bool,
+) -> Option<String> {
+    if !need_genre {
+        return None;
+    }
+    resolve_steam_id(game, resolved).and_then(|id| steam_app_genres(&id).ok().flatten())
+}
+
+fn done(dest: &Path, steam_app_id: Option<String>, genre: Option<String>) -> CoverFetch {
     CoverFetch {
         path: dest.to_string_lossy().to_string(),
         steam_app_id,
+        genre,
     }
 }
 
@@ -155,14 +220,16 @@ pub fn import_cover_file(game_id: &str, source_path: &str) -> Result<String> {
     if !src.exists() {
         anyhow::bail!("Cover file not found");
     }
-    let ext = src
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("jpg")
-        .to_lowercase();
-    let ext = match ext.as_str() {
-        "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp" => ext,
-        _ => "jpg".into(),
+    let header = {
+        let mut f = fs::File::open(src)?;
+        let mut buf = [0u8; 12];
+        use std::io::Read;
+        let n = f.read(&mut buf)?;
+        buf[..n].to_vec()
+    };
+    let ext = match detect_image_ext(&header) {
+        Some(ext) => ext.to_string(),
+        None => anyhow::bail!("File is not a supported image (png, jpeg, webp, gif, bmp)"),
     };
 
     let dir = covers_dir();
@@ -179,6 +246,25 @@ pub fn import_cover_file(game_id: &str, source_path: &str) -> Result<String> {
     }
     fs::copy(src, &dest)?;
     Ok(dest.to_string_lossy().to_string())
+}
+
+fn detect_image_ext(header: &[u8]) -> Option<&'static str> {
+    if header.starts_with(&[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n']) {
+        return Some("png");
+    }
+    if header.starts_with(&[0xff, 0xd8, 0xff]) {
+        return Some("jpg");
+    }
+    if header.starts_with(b"GIF87a") || header.starts_with(b"GIF89a") {
+        return Some("gif");
+    }
+    if header.len() >= 12 && &header[0..4] == b"RIFF" && &header[8..12] == b"WEBP" {
+        return Some("webp");
+    }
+    if header.starts_with(b"BM") {
+        return Some("bmp");
+    }
+    None
 }
 
 fn try_save_portrait(url: &str, dest: &Path) -> Result<bool> {
@@ -417,6 +503,37 @@ fn steam_store_search(name: &str) -> Result<Option<String>> {
         }
     }
     Ok(None)
+}
+
+/// Best-effort Steam store genres via public appdetails API.
+fn steam_app_genres(app_id: &str) -> Result<Option<String>> {
+    let url = format!(
+        "https://store.steampowered.com/api/appdetails?appids={app_id}&filters=genres"
+    );
+    let resp = client()?.get(&url).send()?;
+    if !resp.status().is_success() {
+        return Ok(None);
+    }
+    let json: serde_json::Value = resp.json()?;
+    let genres = json
+        .get(app_id)
+        .and_then(|v| v.get("data"))
+        .and_then(|v| v.get("genres"))
+        .and_then(|v| v.as_array());
+    let Some(genres) = genres else {
+        return Ok(None);
+    };
+    let names: Vec<String> = genres
+        .iter()
+        .filter_map(|g| g.get("description").and_then(|d| d.as_str()))
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if names.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(names.join(", ")))
+    }
 }
 
 fn epic_product_cover(name: &str, launch_target: &str) -> Result<Option<String>> {
@@ -814,16 +931,35 @@ pub fn is_portrait_cover_bytes(bytes: &[u8]) -> bool {
 }
 
 pub fn cover_as_data_url(path: &str) -> Result<String> {
-    let bytes = fs::read(path)?;
+    let requested = Path::new(path);
+    let covers = covers_dir();
+    let covers_canon = covers
+        .canonicalize()
+        .unwrap_or_else(|_| covers.clone());
+    let path_canon = requested
+        .canonicalize()
+        .map_err(|_| anyhow::anyhow!("Cover file not found"))?;
+    if !path_canon.starts_with(&covers_canon) {
+        anyhow::bail!("Cover path is outside the covers folder");
+    }
+
+    let bytes = fs::read(&path_canon)?;
+    if detect_image_ext(&bytes).is_none() {
+        anyhow::bail!("Cover file is not a supported image");
+    }
     let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
-    let mime = if path.ends_with(".png") {
+    let mime = if path_canon.extension().and_then(|e| e.to_str()) == Some("png")
+        || bytes.starts_with(&[0x89, b'P', b'N', b'G'])
+    {
         "image/png"
-    } else if path.ends_with(".webp") {
+    } else if path_canon.extension().and_then(|e| e.to_str()) == Some("webp")
+        || (bytes.len() >= 12 && &bytes[8..12] == b"WEBP")
+    {
         "image/webp"
-    } else if path.ends_with(".gif") {
+    } else if path_canon.extension().and_then(|e| e.to_str()) == Some("gif")
+        || bytes.starts_with(b"GIF")
+    {
         "image/gif"
-    } else if path.ends_with(".svg") {
-        "image/svg+xml"
     } else {
         "image/jpeg"
     };

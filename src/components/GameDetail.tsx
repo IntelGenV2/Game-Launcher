@@ -10,12 +10,11 @@ import {
   formatLastPlayed,
   formatPlaytime,
 } from "../types";
-import { BarChart, LineChart } from "./Charts";
+import { BarChart } from "./Charts";
 
 interface Props {
   game: Game;
   coverDataUrl?: string | null;
-  liveFps?: number | null;
   onBack: () => void;
   onLaunch: (game: Game) => void;
   onToggleFavorite: (game: Game) => void;
@@ -45,7 +44,6 @@ function scrollDetailToTop() {
 export function GameDetail({
   game,
   coverDataUrl,
-  liveFps = null,
   onBack,
   onLaunch,
   onToggleFavorite,
@@ -183,25 +181,6 @@ export function GameDetail({
       value: d.minutes,
     })) ?? [];
 
-  const fpsPoints =
-    stats?.fpsSamples.map((s) => ({
-      label: new Date(s.recordedAt).toLocaleDateString(undefined, {
-        month: "short",
-        day: "numeric",
-      }),
-      value: s.fps,
-    })) ??
-    stats?.sessions
-      .filter((s) => s.avgFps != null)
-      .map((s) => ({
-        label: new Date(s.startedAt).toLocaleDateString(undefined, {
-          month: "short",
-          day: "numeric",
-        }),
-        value: s.avgFps as number,
-      })) ??
-    [];
-
   return (
     <div className="detail-page" ref={pageRef}>
       <button type="button" className="btn back-btn" onClick={onBack}>
@@ -226,10 +205,11 @@ export function GameDetail({
         </div>
 
         <div className="detail-info">
-          <h1>{game.name}</h1>
+          <h2 className="detail-title">{game.name}</h2>
           <p className="detail-store">
             {STORE_LABELS[game.store as Store] ?? game.store}
             {game.missing ? " · Missing from disk" : ""}
+            {game.genre ? ` · ${game.genre}` : ""}
           </p>
           <p className="detail-path" title={pathLabel}>
             {pathLabel}
@@ -247,18 +227,6 @@ export function GameDetail({
             <div className="stat-pill">
               <span className="stat-label">Sessions</span>
               <span className="stat-value">{loading ? "…" : stats?.sessionCount ?? 0}</span>
-            </div>
-            <div className="stat-pill">
-              <span className="stat-label">Live FPS</span>
-              <span className={`stat-value${liveFps ? " live" : ""}`}>
-                {liveFps != null && liveFps > 0 ? Math.round(liveFps) : "—"}
-              </span>
-            </div>
-            <div className="stat-pill">
-              <span className="stat-label">Avg FPS</span>
-              <span className="stat-value">
-                {stats?.avgFps != null ? Math.round(stats.avgFps) : "—"}
-              </span>
             </div>
           </div>
 
@@ -287,7 +255,6 @@ export function GameDetail({
               Remove from launcher
             </button>
           </div>
-          <p className="hint">FPS is logged automatically while you play.</p>
         </div>
       </div>
 
@@ -296,11 +263,6 @@ export function GameDetail({
           title="Playtime (last 14 days)"
           points={dailyPoints}
           formatValue={(v) => `${v}m`}
-        />
-        <LineChart
-          title="FPS history"
-          points={fpsPoints}
-          emptyText="Play the game to build an automatic FPS chart."
         />
       </div>
 
@@ -317,7 +279,6 @@ export function GameDetail({
                 <li key={s.id}>
                   <span>{new Date(s.startedAt).toLocaleString()}</span>
                   <span>{s.durationMinutes > 0 ? `${s.durationMinutes}m` : "in progress"}</span>
-                  <span>{s.avgFps != null ? `${Math.round(s.avgFps)} FPS` : "—"}</span>
                 </li>
               ))}
           </ul>

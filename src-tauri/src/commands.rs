@@ -1,8 +1,7 @@
 use crate::covers;
 use crate::db::{self, Database};
-use crate::fps;
 use crate::launch;
-use crate::models::{AppSettings, FpsSample, Game, GameStats, LibraryStats};
+use crate::models::{AppSettings, Game, GameGroup, GameStats, LibraryStats};
 use crate::scanners;
 use serde::Serialize;
 use std::sync::Mutex;
@@ -12,12 +11,22 @@ pub struct AppState {
     pub db: Mutex<Database>,
 }
 
+fn user_err(e: impl std::fmt::Display) -> String {
+    let full = e.to_string();
+    // Prefer the root cause line; never ship multi-line anyhow chains to the UI.
+    full.lines()
+        .next()
+        .unwrap_or("Something went wrong")
+        .trim()
+        .to_string()
+}
+
 fn with_db<T, F>(state: &State<AppState>, f: F) -> Result<T, String>
 where
     F: FnOnce(&Database) -> anyhow::Result<T>,
 {
     let db = state.db.lock().map_err(|e| e.to_string())?;
-    f(&db).map_err(|e| format!("{e:#}"))
+    f(&db).map_err(user_err)
 }
 
 #[tauri::command]
@@ -35,7 +44,7 @@ pub fn list_hidden_games(state: State<AppState>) -> Result<Vec<Game>, String> {
 
 #[tauri::command]
 pub fn rescan_library(state: State<AppState>) -> Result<Vec<Game>, String> {
-    let discovered = scanners::scan_all().map_err(|e| format!("{e:#}"))?;
+    let discovered = scanners::scan_all().map_err(user_err)?;
     with_db(&state, |db| {
         db.upsert_discovered(&discovered)?;
         db.list_games(false)
@@ -43,34 +52,19 @@ pub fn rescan_library(state: State<AppState>) -> Result<Vec<Game>, String> {
 }
 
 #[tauri::command]
-pub fn launch_game(app: AppHandle, state: State<AppState>, id: String) -> Result<Game, String> {
+pub fn launch_game(state: State<AppState>, id: String) -> Result<Game, String> {
     let game = with_db(&state, |db| {
         db.record_launch(&id)?;
         db.get_game(&id)?
             .ok_or_else(|| anyhow::anyhow!("game not found"))
     })?;
-    launch::launch_game(&game).map_err(|e| format!("{e:#}"))?;
-    fps::start_monitoring(app, game.id.clone(), game.launch_target.clone());
+    launch::launch_game(&game).map_err(user_err)?;
     Ok(game)
 }
 
 #[tauri::command]
-pub fn stop_fps_monitor() -> Result<(), String> {
-    fps::stop_monitoring();
-    Ok(())
-}
-
-#[tauri::command]
-pub fn end_play_session(
-    state: State<AppState>,
-    id: String,
-    minutes: i64,
-    avg_fps: Option<f64>,
-) -> Result<Game, String> {
-    fps::stop_monitoring();
-    with_db(&state, |db| {
-        db.end_session_and_add_playtime(&id, minutes, avg_fps)
-    })
+pub fn end_play_session(state: State<AppState>, id: String, minutes: i64) -> Result<Game, String> {
+    with_db(&state, |db| db.end_session_and_add_playtime(&id, minutes))
 }
 
 #[tauri::command]
@@ -92,12 +86,12 @@ pub fn open_install_folder(state: State<AppState>, id: String) -> Result<(), Str
     let path = game
         .install_path
         .ok_or_else(|| "No install path".to_string())?;
-    launch::open_folder(&path).map_err(|e| format!("{e:#}"))
+    launch::open_folder(&path).map_err(user_err)
 }
 
 #[tauri::command]
 pub fn add_manual_game(state: State<AppState>, path: String) -> Result<Game, String> {
-    let discovered = scanners::create_manual_from_path(&path).map_err(|e| format!("{e:#}"))?;
+    let discovered = scanners::create_manual_from_path(&path).map_err(user_err)?;
     with_db(&state, |db| {
         db.add_manual_game(
             &discovered.id,
@@ -137,9 +131,10 @@ struct CoverUpdatedPayload {
     cover_path: String,
     steam_app_id: Option<String>,
     cover_url: Option<String>,
+    genre: Option<String>,
 }
 
-/// Fetch missing covers in a background thread so the UI never freezes.
+/// Fetch missing covers / genre metadata in a background thread so the UI never freezes.
 /// Emits `cover-updated` per game and `covers-done` when finished.
 #[tauri::command]
 pub fn fetch_covers(
@@ -161,12 +156,16 @@ pub fn fetch_covers(
                 if g.hidden {
                     return false;
                 }
-                // Only fetch when missing / broken — do NOT re-read every cover file
-                // (that was freezing the UI for several seconds on startup).
-                match &g.cover_path {
+                let need_cover = match &g.cover_path {
                     None => true,
                     Some(p) => !std::path::Path::new(p).exists(),
-                }
+                };
+                let need_genre = g
+                    .genre
+                    .as_ref()
+                    .map(|s| s.trim().is_empty())
+                    .unwrap_or(true);
+                need_cover || need_genre
             })
             .take(40)
             .collect(),
@@ -197,6 +196,9 @@ pub fn fetch_covers(
                 if let Some(steam_id) = &fetched.steam_app_id {
                     let _ = db.set_steam_app_id(&game.id, steam_id);
                 }
+                if let Some(genre) = &fetched.genre {
+                    let _ = db.set_genre(&game.id, genre);
+                }
             }
 
             let _ = app.emit(
@@ -206,6 +208,7 @@ pub fn fetch_covers(
                     cover_path: fetched.path,
                     steam_app_id: fetched.steam_app_id,
                     cover_url: None,
+                    genre: fetched.genre,
                 },
             );
         }
@@ -227,7 +230,7 @@ pub fn set_game_name(state: State<AppState>, id: String, name: String) -> Result
 
 #[tauri::command]
 pub fn set_custom_cover(state: State<AppState>, id: String, path: String) -> Result<Game, String> {
-    let dest = covers::import_cover_file(&id, &path).map_err(|e| format!("{e:#}"))?;
+    let dest = covers::import_cover_file(&id, &path).map_err(user_err)?;
     with_db(&state, |db| {
         db.set_cover(&id, None, Some(&dest))?;
         db.get_game(&id)?
@@ -266,7 +269,7 @@ pub fn get_cover_data_url(state: State<AppState>, id: String) -> Result<Option<S
     if let Some(path) = &game.cover_path {
         return covers::cover_as_data_url(path)
             .map(Some)
-            .map_err(|e| format!("{e:#}"));
+            .map_err(user_err);
     }
     if let Some(url) = &game.cover_url {
         return Ok(Some(url.clone()));
@@ -306,30 +309,51 @@ pub fn get_game_stats(state: State<AppState>, id: String) -> Result<GameStats, S
 }
 
 #[tauri::command]
-pub fn log_fps(
-    state: State<AppState>,
-    id: String,
-    fps: f64,
-    note: Option<String>,
-) -> Result<FpsSample, String> {
-    with_db(&state, |db| db.add_fps_sample(&id, fps, note.as_deref()))
-}
-
-#[tauri::command]
-pub fn record_live_fps(state: State<AppState>, id: String, fps: f64) -> Result<(), String> {
-    if !(0.0..=1000.0).contains(&fps) || fps == 0.0 {
-        return Ok(());
-    }
-    with_db(&state, |db| {
-        db.add_fps_sample(&id, fps, Some("live"))?;
-        Ok(())
-    })
-}
-
-#[tauri::command]
 pub fn app_data_path() -> Result<String, String> {
     Ok(db::default_db_path()
         .parent()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default())
+}
+
+#[tauri::command]
+pub fn list_groups(state: State<AppState>) -> Result<Vec<GameGroup>, String> {
+    with_db(&state, |db| db.list_groups())
+}
+
+#[tauri::command]
+pub fn create_group(
+    state: State<AppState>,
+    name: String,
+    game_ids: Vec<String>,
+) -> Result<GameGroup, String> {
+    with_db(&state, |db| db.create_group(&name, &game_ids))
+}
+
+#[tauri::command]
+pub fn rename_group(state: State<AppState>, id: String, name: String) -> Result<GameGroup, String> {
+    with_db(&state, |db| db.rename_group(&id, &name))
+}
+
+#[tauri::command]
+pub fn delete_group(state: State<AppState>, id: String) -> Result<(), String> {
+    with_db(&state, |db| db.delete_group(&id))
+}
+
+#[tauri::command]
+pub fn add_game_to_group(
+    state: State<AppState>,
+    group_id: String,
+    game_id: String,
+) -> Result<GameGroup, String> {
+    with_db(&state, |db| db.add_game_to_group(&group_id, &game_id))
+}
+
+#[tauri::command]
+pub fn remove_game_from_group(
+    state: State<AppState>,
+    group_id: String,
+    game_id: String,
+) -> Result<GameGroup, String> {
+    with_db(&state, |db| db.remove_game_from_group(&group_id, &game_id))
 }

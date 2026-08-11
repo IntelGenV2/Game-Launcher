@@ -1,6 +1,7 @@
 @import url("https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Syne:wght@600;700;800&display=swap");
 
-:root {
+:root,
+[data-theme="emerald"] {
   --bg-deep: #0a0e14;
   --bg-glass: rgba(18, 24, 34, 0.55);
   --bg-glass-strong: rgba(22, 30, 42, 0.72);
@@ -21,6 +22,41 @@
   --radius-sm: 10px;
   --font: "Outfit", system-ui, sans-serif;
   --font-display: "Syne", "Outfit", sans-serif;
+  --card-min: 150px;
+  --shell-glow-a: rgba(62, 207, 142, 0.16);
+  --shell-glow-b: rgba(80, 140, 255, 0.12);
+}
+
+[data-theme="amber"] {
+  --accent: #f0a202;
+  --accent-soft: rgba(240, 162, 2, 0.18);
+  --accent-hot: #ffc857;
+  --shell-glow-a: rgba(240, 162, 2, 0.16);
+  --shell-glow-b: rgba(255, 120, 40, 0.12);
+}
+
+[data-theme="cyan"] {
+  --accent: #2ec4b6;
+  --accent-soft: rgba(46, 196, 182, 0.18);
+  --accent-hot: #5eead4;
+  --shell-glow-a: rgba(46, 196, 182, 0.16);
+  --shell-glow-b: rgba(56, 120, 255, 0.14);
+}
+
+[data-theme="slate"] {
+  --accent: #94a3b8;
+  --accent-soft: rgba(148, 163, 184, 0.2);
+  --accent-hot: #cbd5e1;
+  --shell-glow-a: rgba(148, 163, 184, 0.14);
+  --shell-glow-b: rgba(100, 116, 139, 0.12);
+}
+
+[data-theme="crimson"] {
+  --accent: #e63946;
+  --accent-soft: rgba(230, 57, 70, 0.18);
+  --accent-hot: #ff6b7a;
+  --shell-glow-a: rgba(230, 57, 70, 0.16);
+  --shell-glow-b: rgba(255, 120, 80, 0.1);
 }
 
 *,
@@ -46,7 +82,8 @@ body {
 }
 
 button,
-input {
+input,
+select {
   font-family: inherit;
 }
 

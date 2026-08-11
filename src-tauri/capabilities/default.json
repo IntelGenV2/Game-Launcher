@@ -8,7 +8,6 @@
     "core:event:default",
     "opener:default",
     "dialog:default",
-    "shell:default",
     "updater:default",
     "process:default",
     "window-state:default"

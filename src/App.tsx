@@ -1,16 +1,33 @@
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Filters } from "./components/Filters";
 import { GameDetail } from "./components/GameDetail";
 import { GameGrid } from "./components/GameGrid";
+import { GroupAddModal } from "./components/GroupAddModal";
+import { GroupNameModal } from "./components/GroupNameModal";
+import { CustomSelect } from "./components/CustomSelect";
 import { SettingsModal } from "./components/SettingsModal";
+import { UpdateChecker } from "./components/UpdateChecker";
 import {
   AppSettings,
+  applyAppearance,
+  buildDefaultLibraryOrder,
+  FILTER_OPTIONS,
   Game,
+  GameGroup,
+  gameOrderKey,
+  groupOrderKey,
+  isSortMode,
+  isThemeId,
+  LibraryFilter,
   LibraryStats,
+  parseLibraryOrder,
+  reconcileLibraryOrder,
+  SORT_OPTIONS,
   SortMode,
-  Store,
+  ThemeId,
 } from "./types";
 import "./styles/theme.css";
 import "./styles/App.css";
@@ -20,24 +37,33 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [scanning, setScanning] = useState(false);
   const [query, setQuery] = useState("");
-  const [favoritesOnly, setFavoritesOnly] = useState(false);
-  const [showHidden, setShowHidden] = useState(false);
-  const [activeStores, setActiveStores] = useState<Set<Store>>(new Set());
-  const [liveFps, setLiveFps] = useState<{ gameId: string; fps: number } | null>(null);
+  const [libraryFilter, setLibraryFilter] = useState<LibraryFilter>("all");
   const [sortBy, setSortBy] = useState<SortMode>("name");
   const [toast, setToast] = useState<{ text: string; error?: boolean } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settings, setSettings] = useState<AppSettings>({
     steamGridDbApiKey: null,
     sortBy: "name",
+    theme: "emerald",
+    cardScale: 1,
+    libraryOrder: null,
   });
   const [stats, setStats] = useState<LibraryStats>({ total: 0, favorites: 0, missing: 0 });
   const [dataPath, setDataPath] = useState("");
   const [coverMap, setCoverMap] = useState<Record<string, string>>({});
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [groups, setGroups] = useState<GameGroup[]>([]);
+  const [expandedGroupId, setExpandedGroupId] = useState<string | null>(null);
+  const [libraryOrder, setLibraryOrder] = useState<string[]>([]);
+  const [addToGroupTarget, setAddToGroupTarget] = useState<GameGroup | null>(null);
+  const [groupNameModal, setGroupNameModal] = useState<
+    null | { mode: "create" } | { mode: "rename"; group: GameGroup }
+  >(null);
   const coverLoaded = useRef<Set<string>>(new Set());
   const sessionStarts = useRef<Record<string, number>>({});
   const toastTimer = useRef<number | null>(null);
+
+  const showHidden = libraryFilter === "hidden";
 
   const showToast = useCallback((text: string, error = false) => {
     setToast({ text, error });
@@ -54,6 +80,21 @@ function App() {
     }
   }, []);
 
+  const applySettingsAppearance = useCallback((s: AppSettings) => {
+    const theme: ThemeId = isThemeId(s.theme) ? s.theme : "emerald";
+    const scale = typeof s.cardScale === "number" && s.cardScale > 0 ? s.cardScale : 1;
+    applyAppearance(theme, scale);
+  }, []);
+
+  const refreshGroups = useCallback(async () => {
+    try {
+      const list = await invoke<GameGroup[]>("list_groups");
+      setGroups(list);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
   const bootstrap = useCallback(async () => {
     setLoading(true);
     try {
@@ -62,16 +103,23 @@ function App() {
         invoke<string>("app_data_path"),
       ]);
       setSettings(s);
-      if (s.sortBy === "recent" || s.sortBy === "playtime" || s.sortBy === "favorites" || s.sortBy === "name") {
-        setSortBy(s.sortBy);
-      }
+      if (isSortMode(s.sortBy)) setSortBy(s.sortBy);
+      applySettingsAppearance(s);
       setDataPath(path);
 
-      // Always load persisted library first (manual games survive restarts here)
       let list = await invoke<Game[]>("list_games");
       setGames(list);
+      const groupList = await invoke<GameGroup[]>("list_groups");
+      setGroups(groupList);
+      const savedOrder = parseLibraryOrder(s.libraryOrder);
+      setLibraryOrder(
+        reconcileLibraryOrder(
+          savedOrder.length ? savedOrder : buildDefaultLibraryOrder(list, groupList),
+          list,
+          groupList,
+        ),
+      );
 
-      // Rescan in background / on empty
       if (list.length === 0) {
         setScanning(true);
         list = await invoke<Game[]>("rescan_library");
@@ -80,7 +128,6 @@ function App() {
       }
       await refreshStats();
 
-      // Background cover fetch — never blocks the UI thread
       invoke("fetch_covers", { ids: null }).catch(() => undefined);
     } catch (e) {
       showToast(String(e), true);
@@ -88,13 +135,12 @@ function App() {
       setLoading(false);
       setScanning(false);
     }
-  }, [refreshStats, showToast]);
+  }, [applySettingsAppearance, refreshGroups, refreshStats, showToast]);
 
   useEffect(() => {
     bootstrap();
   }, [bootstrap]);
 
-  // Keep stats page pinned to the top of the scroll pane
   useEffect(() => {
     if (!selectedId) return;
     const main = document.querySelector(".main");
@@ -104,7 +150,6 @@ function App() {
     });
   }, [selectedId]);
 
-  // Apply covers as they finish downloading (non-blocking)
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     (async () => {
@@ -114,8 +159,9 @@ function App() {
         coverPath: string;
         steamAppId: string | null;
         coverUrl: string | null;
+        genre: string | null;
       }>("cover-updated", (event) => {
-        const { id, coverPath, steamAppId, coverUrl } = event.payload;
+        const { id, coverPath, steamAppId, coverUrl, genre } = event.payload;
         setGames((prev) =>
           prev.map((g) =>
             g.id === id
@@ -124,11 +170,11 @@ function App() {
                   coverPath,
                   steamAppId: steamAppId ?? g.steamAppId,
                   coverUrl: coverUrl ?? g.coverUrl,
+                  genre: genre ?? g.genre,
                 }
               : g,
           ),
         );
-        // Immediately hydrate this tile — don't wait for a full grid reload
         invoke<string | null>("get_cover_data_url", { id })
           .then((url) => {
             if (url) {
@@ -144,8 +190,6 @@ function App() {
     };
   }, []);
 
-  // One-shot batch load of all local covers for the home grid.
-  // Important: do NOT cancel/re-mark ids when `games` updates (that was dropping art).
   useEffect(() => {
     const needing = games
       .filter((g) => g.coverPath && !coverLoaded.current.has(g.id) && !coverMap[g.id])
@@ -164,7 +208,6 @@ function App() {
         }
         setCoverMap((prev) => ({ ...prev, ...map }));
       } catch {
-        // Fallback: load individually so one failure can't blank the grid
         if (!alive) return;
         for (const id of needing) {
           if (!alive) return;
@@ -212,36 +255,6 @@ function App() {
     };
   }, [showHidden, showToast]);
 
-  // Live FPS from PresentMon
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    let lastLogged = 0;
-    (async () => {
-      const { listen } = await import("@tauri-apps/api/event");
-      unlisten = await listen<{ gameId: string; fps: number; processAlive: boolean }>(
-        "fps-tick",
-        (event) => {
-          const { gameId, fps, processAlive } = event.payload;
-          if (!processAlive) {
-            setLiveFps((prev) => (prev?.gameId === gameId ? null : prev));
-            return;
-          }
-          if (fps > 0) {
-            setLiveFps({ gameId, fps });
-            const now = Date.now();
-            if (now - lastLogged > 15000) {
-              lastLogged = now;
-              invoke("record_live_fps", { id: gameId, fps }).catch(() => undefined);
-            }
-          }
-        },
-      );
-    })();
-    return () => {
-      unlisten?.();
-    };
-  }, []);
-
   const selectedGame = useMemo(
     () => games.find((g) => g.id === selectedId) ?? null,
     [games, selectedId],
@@ -250,17 +263,36 @@ function App() {
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     let list = games.filter((g) => {
-      if (showHidden) return g.hidden;
+      if (libraryFilter === "hidden") return g.hidden;
       if (g.hidden) return false;
-      if (favoritesOnly && !g.favorite) return false;
-      if (activeStores.size > 0 && !activeStores.has(g.store)) return false;
+      if (libraryFilter === "favorites" && !g.favorite) return false;
+      if (libraryFilter === "other") {
+        if (g.store !== "manual" && g.store !== "roblox") return false;
+      } else if (
+        libraryFilter !== "all" &&
+        libraryFilter !== "favorites" &&
+        g.store !== libraryFilter
+      ) {
+        return false;
+      }
       if (q && !g.name.toLowerCase().includes(q)) return false;
       return true;
     });
 
     list = [...list].sort((a, b) => {
+      if (sortBy === "custom") {
+        const ai = libraryOrder.indexOf(gameOrderKey(a.id));
+        const bi = libraryOrder.indexOf(gameOrderKey(b.id));
+        const av = ai < 0 ? Number.MAX_SAFE_INTEGER : ai;
+        const bv = bi < 0 ? Number.MAX_SAFE_INTEGER : bi;
+        return av - bv || a.name.localeCompare(b.name);
+      }
       if (sortBy === "favorites") {
         if (a.favorite !== b.favorite) return a.favorite ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      }
+      if (sortBy === "missing") {
+        if (a.missing !== b.missing) return a.missing ? -1 : 1;
         return a.name.localeCompare(b.name);
       }
       if (sortBy === "playtime") {
@@ -271,10 +303,45 @@ function App() {
         const bt = b.lastPlayedAt ? Date.parse(b.lastPlayedAt) : 0;
         return bt - at || a.name.localeCompare(b.name);
       }
+      if (sortBy === "added") {
+        return Date.parse(b.dateAdded) - Date.parse(a.dateAdded) || a.name.localeCompare(b.name);
+      }
+      if (sortBy === "nameDesc") {
+        return b.name.localeCompare(a.name);
+      }
       return a.name.localeCompare(b.name);
     });
     return list;
-  }, [games, query, favoritesOnly, activeStores, sortBy, showHidden]);
+  }, [games, query, libraryFilter, sortBy, libraryOrder]);
+
+  // Keep library order in sync when games/groups change
+  useEffect(() => {
+    setLibraryOrder((prev) => reconcileLibraryOrder(prev, games, groups));
+  }, [games, groups]);
+
+  const persistLibraryOrder = useCallback(
+    (nextOrder: string[], forceCustom = true) => {
+      const reconciled = reconcileLibraryOrder(nextOrder, games, groups);
+      setLibraryOrder(reconciled);
+      const nextSort: SortMode = forceCustom ? "custom" : sortBy;
+      if (forceCustom) setSortBy("custom");
+      const nextSettings: AppSettings = {
+        ...settings,
+        sortBy: nextSort,
+        libraryOrder: JSON.stringify(reconciled),
+      };
+      setSettings(nextSettings);
+      invoke("save_settings", { settings: nextSettings }).catch(() => undefined);
+    },
+    [games, groups, settings, sortBy],
+  );
+
+  const libraryOrderRef = useRef(libraryOrder);
+  const groupsRef = useRef(groups);
+  const persistOrderRef = useRef(persistLibraryOrder);
+  libraryOrderRef.current = libraryOrder;
+  groupsRef.current = groups;
+  persistOrderRef.current = persistLibraryOrder;
 
   async function handleRescan() {
     setScanning(true);
@@ -291,6 +358,38 @@ function App() {
     }
   }
 
+  const addManualFromPath = useCallback(
+    async (path: string, groupId?: string | null) => {
+      const game = await invoke<Game>("add_manual_game", { path });
+      setGames((prev) => {
+        const rest = prev.filter((g) => g.id !== game.id);
+        return [...rest, game].sort((a, b) => a.name.localeCompare(b.name));
+      });
+
+      const order = libraryOrderRef.current.filter((k) => k !== gameOrderKey(game.id));
+      const group = groupId ? groupsRef.current.find((g) => g.id === groupId) : null;
+
+      if (group) {
+        await invoke<GameGroup>("add_game_to_group", {
+          groupId: group.id,
+          gameId: game.id,
+        });
+        await refreshGroups();
+        persistOrderRef.current(order, true);
+        showToast(`Added ${game.name} to “${group.name}”`);
+      } else {
+        persistOrderRef.current([...order, gameOrderKey(game.id)], true);
+        showToast(`Added ${game.name} (saved permanently)`);
+      }
+
+      await refreshStats();
+      setSelectedId(game.id);
+      invoke("fetch_covers", { ids: [game.id] }).catch(() => undefined);
+      return game;
+    },
+    [refreshGroups, refreshStats, showToast],
+  );
+
   async function handleAddManual() {
     try {
       const selected = await open({
@@ -299,18 +398,59 @@ function App() {
         filters: [{ name: "Executable", extensions: ["exe"] }],
       });
       if (!selected || typeof selected !== "string") return;
-      const game = await invoke<Game>("add_manual_game", { path: selected });
-      setGames((prev) => {
-        const rest = prev.filter((g) => g.id !== game.id);
-        return [...rest, game].sort((a, b) => a.name.localeCompare(b.name));
-      });
-      await refreshStats();
-      showToast(`Added ${game.name} (saved permanently)`);
-      setSelectedId(game.id);
+      await addManualFromPath(selected);
     } catch (e) {
       showToast(String(e), true);
     }
   }
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const webview = getCurrentWebview();
+        const win = getCurrentWindow();
+        unlisten = await webview.onDragDropEvent(async (event) => {
+          if (event.payload.type !== "drop") return;
+          const paths = event.payload.paths.filter((p) =>
+            p.toLowerCase().endsWith(".exe"),
+          );
+          if (paths.length === 0) {
+            showToast("Drop a .exe file to add a game", true);
+            return;
+          }
+
+          let groupId: string | null = null;
+          try {
+            const factor = await win.scaleFactor();
+            const { x, y } = event.payload.position;
+            const el = document.elementFromPoint(x / factor, y / factor) as HTMLElement | null;
+            groupId = el?.closest<HTMLElement>("[data-drop-group]")?.dataset.dropGroup ?? null;
+          } catch {
+            /* ignore hit-test failures */
+          }
+
+          for (const path of paths) {
+            try {
+              await addManualFromPath(path, groupId);
+            } catch (e) {
+              showToast(String(e), true);
+            }
+          }
+        });
+        if (cancelled) unlisten();
+      } catch {
+        /* not running inside Tauri */
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [addManualFromPath, showToast]);
 
   async function handleLaunch(game: Game) {
     if (game.missing) {
@@ -321,11 +461,13 @@ function App() {
       const prev = sessionStarts.current[game.id];
       if (prev) {
         const minutes = Math.max(1, Math.round((Date.now() - prev) / 60000));
-        await invoke("end_play_session", { id: game.id, minutes, avgFps: null });
+        await invoke("end_play_session", { id: game.id, minutes });
       }
       sessionStarts.current[game.id] = Date.now();
       const updated = await invoke<Game>("launch_game", { id: game.id });
-      setGames((prev) => prev.map((g) => (g.id === updated.id ? { ...updated, playtimeMinutes: g.playtimeMinutes } : g)));
+      setGames((prev) =>
+        prev.map((g) => (g.id === updated.id ? { ...updated, playtimeMinutes: g.playtimeMinutes } : g)),
+      );
       showToast(`Launching ${game.name}`);
     } catch (e) {
       showToast(String(e), true);
@@ -341,7 +483,6 @@ function App() {
             const updated = await invoke<Game>("end_play_session", {
               id,
               minutes,
-              avgFps: null,
             });
             setGames((prev) => prev.map((g) => (g.id === updated.id ? updated : g)));
             delete sessionStarts.current[id];
@@ -371,7 +512,6 @@ function App() {
       const updated = await invoke<Game>("set_hidden", { id: game.id, hidden: hide });
       if (showHidden) {
         if (!hide) {
-          // unhidden — remove from hidden view
           setGames((prev) => prev.filter((g) => g.id !== game.id));
           if (selectedId === game.id) setSelectedId(null);
         } else {
@@ -414,31 +554,153 @@ function App() {
     }
   }
 
-  function toggleStore(store: Store) {
-    setActiveStores((prev) => {
-      const next = new Set(prev);
-      if (next.has(store)) next.delete(store);
-      else next.add(store);
-      return next;
-    });
+  async function refreshGroupsLocal(next?: GameGroup) {
+    if (next) {
+      setGroups((prev) => {
+        const rest = prev.filter((g) => g.id !== next.id);
+        return [...rest, next].sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name));
+      });
+      return;
+    }
+    await refreshGroups();
   }
+
+  async function handleCreateGroup() {
+    setGroupNameModal({ mode: "create" });
+  }
+
+  async function confirmCreateGroup(name: string) {
+    const group = await invoke<GameGroup>("create_group", {
+      name,
+      gameIds: [],
+    });
+    await refreshGroupsLocal(group);
+    persistLibraryOrder([...libraryOrder, groupOrderKey(group.id)], true);
+    showToast(`Created “${group.name}”`);
+    setExpandedGroupId(group.id);
+  }
+
+  async function handleAddToGroup(game: Game, group: GameGroup) {
+    try {
+      await invoke<GameGroup>("add_game_to_group", {
+        groupId: group.id,
+        gameId: game.id,
+      });
+      await refreshGroups();
+      persistLibraryOrder(
+        libraryOrder.filter((k) => k !== gameOrderKey(game.id)),
+        true,
+      );
+      showToast(`Added to “${group.name}”`);
+    } catch (e) {
+      showToast(String(e), true);
+    }
+  }
+
+  function handleRenameGroup(group: GameGroup) {
+    setGroupNameModal({ mode: "rename", group });
+  }
+
+  async function confirmRenameGroup(group: GameGroup, name: string) {
+    const updated = await invoke<GameGroup>("rename_group", {
+      id: group.id,
+      name,
+    });
+    await refreshGroupsLocal(updated);
+    showToast("Group renamed");
+  }
+
+  async function handleDeleteGroup(group: GameGroup) {
+    if (!confirm(`Delete group “${group.name}”? Games stay in your library.`)) return;
+    try {
+      const memberKeys = group.gameIds.map((id) => gameOrderKey(id));
+      await invoke("delete_group", { id: group.id });
+      setGroups((prev) => prev.filter((g) => g.id !== group.id));
+      if (expandedGroupId === group.id) setExpandedGroupId(null);
+      const without = libraryOrder.filter((k) => k !== groupOrderKey(group.id));
+      const insertAt = Math.max(0, libraryOrder.indexOf(groupOrderKey(group.id)));
+      const next = [...without];
+      next.splice(insertAt, 0, ...memberKeys.filter((k) => !without.includes(k)));
+      persistLibraryOrder(next, true);
+      showToast(`Deleted “${group.name}”`);
+    } catch (e) {
+      showToast(String(e), true);
+    }
+  }
+
+  async function handleRemoveFromGroup(group: GameGroup, game: Game) {
+    try {
+      const updated = await invoke<GameGroup>("remove_game_from_group", {
+        groupId: group.id,
+        gameId: game.id,
+      });
+      await refreshGroupsLocal(updated);
+      const gKey = groupOrderKey(group.id);
+      const next = libraryOrder.filter((k) => k !== gameOrderKey(game.id));
+      const idx = next.indexOf(gKey);
+      if (idx >= 0) next.splice(idx + 1, 0, gameOrderKey(game.id));
+      else next.push(gameOrderKey(game.id));
+      persistLibraryOrder(next, true);
+      showToast(`Removed from “${group.name}”`);
+    } catch (e) {
+      showToast(String(e), true);
+    }
+  }
+
+  function persistSort(v: SortMode) {
+    setSortBy(v);
+    const next = { ...settings, sortBy: v, libraryOrder: JSON.stringify(libraryOrder) };
+    setSettings(next);
+    invoke("save_settings", { settings: next }).catch(() => undefined);
+  }
+
+  // Save order when leaving the app
+  useEffect(() => {
+    const save = () => {
+      const payload: AppSettings = {
+        ...settings,
+        sortBy,
+        libraryOrder: JSON.stringify(libraryOrder),
+      };
+      invoke("save_settings", { settings: payload }).catch(() => undefined);
+    };
+    window.addEventListener("beforeunload", save);
+    return () => window.removeEventListener("beforeunload", save);
+  }, [settings, sortBy, libraryOrder]);
 
   return (
     <div className="app-shell">
       <header className="topbar">
         <div className="brand">
-          <img src="/intelgen-icon.png" alt="" className="brand-mark" />
-          <span className="brand-name">IntelGen</span>
+          <img src="/intelgen-icon.png" alt="IntelGen" className="brand-mark" />
+          <h1 className="brand-name">IntelGen</h1>
         </div>
         {!selectedGame && (
-          <div className="search-wrap">
-            <span className="icon">⌕</span>
-            <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search games…"
-              aria-label="Search games"
+          <div className="topbar-tools">
+            <div className="search-wrap">
+              <span className="icon">⌕</span>
+              <input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search…"
+                aria-label="Search games"
+              />
+            </div>
+            <CustomSelect
+              value={libraryFilter}
+              options={FILTER_OPTIONS}
+              onChange={setLibraryFilter}
+              ariaLabel="Filter library"
             />
+            <CustomSelect
+              value={sortBy}
+              options={SORT_OPTIONS}
+              onChange={persistSort}
+              ariaLabel="Sort games"
+            />
+            <button type="button" className="btn" onClick={() => void handleCreateGroup()}>
+              Create group
+            </button>
           </div>
         )}
         <div className="top-actions">
@@ -459,34 +721,11 @@ function App() {
         </div>
       </header>
 
-      {!selectedGame && (
-        <Filters
-          activeStores={activeStores}
-          favoritesOnly={favoritesOnly}
-          showHidden={showHidden}
-          onToggleStore={toggleStore}
-          onToggleFavorites={() => {
-            setFavoritesOnly((v) => !v);
-            setShowHidden(false);
-          }}
-          onToggleHidden={() => {
-            setShowHidden((v) => !v);
-            setFavoritesOnly(false);
-            setActiveStores(new Set());
-          }}
-          onClearStores={() => {
-            setActiveStores(new Set());
-            setShowHidden(false);
-          }}
-        />
-      )}
-
       <main className="main">
         {selectedGame ? (
           <GameDetail
             game={selectedGame}
             coverDataUrl={coverMap[selectedGame.id]}
-            liveFps={liveFps?.gameId === selectedGame.id ? liveFps.fps : null}
             onBack={() => setSelectedId(null)}
             onLaunch={handleLaunch}
             onToggleFavorite={handleToggleFavorite}
@@ -514,23 +753,6 @@ function App() {
                   </span>
                 )}
               </div>
-              <select
-                className="sort-select"
-                value={sortBy}
-                onChange={(e) => {
-                  const v = e.target.value as SortMode;
-                  setSortBy(v);
-                  const next = { ...settings, sortBy: v };
-                  setSettings(next);
-                  invoke("save_settings", { settings: next }).catch(() => undefined);
-                }}
-                aria-label="Sort games"
-              >
-                <option value="name">A–Z</option>
-                <option value="recent">Recently played</option>
-                <option value="playtime">Playtime</option>
-                <option value="favorites">Favorites first</option>
-              </select>
             </div>
 
             {!loading && games.length === 0 ? (
@@ -544,7 +766,15 @@ function App() {
             ) : (
               <GameGrid
                 games={filtered}
+                groups={groups}
                 coverMap={coverMap}
+                libraryOrder={
+                  sortBy === "custom"
+                    ? libraryOrder
+                    : buildDefaultLibraryOrder(filtered, groups)
+                }
+                expandedGroupId={expandedGroupId}
+                onExpandedGroupChange={setExpandedGroupId}
                 onOpen={(g) => {
                   setSelectedId(g.id);
                 }}
@@ -552,11 +782,58 @@ function App() {
                 onToggleFavorite={handleToggleFavorite}
                 onHide={handleHide}
                 onOpenFolder={handleOpenFolder}
+                onAddGame={handleAddManual}
+                onRenameGroup={handleRenameGroup}
+                onDeleteGroup={handleDeleteGroup}
+                onAddToGroup={handleAddToGroup}
+                onRemoveFromGroup={handleRemoveFromGroup}
+                onReorder={(next) => persistLibraryOrder(next, true)}
+                onAddGamesToGroup={(g) => setAddToGroupTarget(g)}
               />
             )}
           </>
         )}
       </main>
+
+      <GroupAddModal
+        open={addToGroupTarget != null}
+        group={addToGroupTarget}
+        members={
+          addToGroupTarget
+            ? addToGroupTarget.gameIds
+                .map((id) => games.find((g) => g.id === id))
+                .filter((g): g is Game => Boolean(g))
+            : []
+        }
+        allGames={games}
+        coverMap={coverMap}
+        onClose={() => setAddToGroupTarget(null)}
+        onAdd={(game) => {
+          if (addToGroupTarget) void handleAddToGroup(game, addToGroupTarget);
+        }}
+      />
+
+      <GroupNameModal
+        open={groupNameModal != null}
+        title={groupNameModal?.mode === "rename" ? "Rename group" : "Create group"}
+        initialName={
+          groupNameModal?.mode === "rename" ? groupNameModal.group.name : "New group"
+        }
+        confirmLabel={groupNameModal?.mode === "rename" ? "Rename" : "Create"}
+        onClose={() => setGroupNameModal(null)}
+        onConfirm={async (name) => {
+          try {
+            if (groupNameModal?.mode === "rename") {
+              await confirmRenameGroup(groupNameModal.group, name);
+            } else {
+              await confirmCreateGroup(name);
+            }
+          } catch (e) {
+            showToast(String(e), true);
+            throw e;
+          }
+        }}
+      />
 
       <SettingsModal
         open={settingsOpen}
@@ -566,10 +843,17 @@ function App() {
         onSave={async (next) => {
           await invoke("save_settings", { settings: next });
           setSettings(next);
+          if (isSortMode(next.sortBy)) setSortBy(next.sortBy);
+          applySettingsAppearance(next);
           showToast("Settings saved");
           invoke("fetch_covers", { ids: null }).catch(() => undefined);
         }}
+        onPreviewAppearance={(theme, cardScale) => {
+          applyAppearance(theme, cardScale);
+        }}
       />
+
+      <UpdateChecker />
 
       {toast && (
         <div className={`toast${toast.error ? " error" : ""}`} role="status">

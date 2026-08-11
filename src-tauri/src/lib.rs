@@ -1,7 +1,6 @@
 mod commands;
 mod covers;
 mod db;
-mod fps;
 mod launch;
 mod models;
 mod scanners;
@@ -19,7 +18,6 @@ pub fn run() {
         .plugin(tauri_plugin_window_state::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .manage(AppState {
@@ -46,10 +44,13 @@ pub fn run() {
             commands::get_cover_data_url,
             commands::get_cover_data_urls,
             commands::get_game_stats,
-            commands::log_fps,
-            commands::record_live_fps,
-            commands::stop_fps_monitor,
             commands::app_data_path,
+            commands::list_groups,
+            commands::create_group,
+            commands::rename_group,
+            commands::delete_group,
+            commands::add_game_to_group,
+            commands::remove_game_from_group,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
