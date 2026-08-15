@@ -2,7 +2,19 @@ import { getVersion } from "@tauri-apps/api/app";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check } from "@tauri-apps/plugin-updater";
-import { AppSettings, isThemeId, THEME_OPTIONS, ThemeId } from "../types";
+import {
+  AppSettings,
+  AppearancePrefs,
+  CORNER_OPTIONS,
+  CoverCorners,
+  CoverShape,
+  DENSITY_OPTIONS,
+  GridDensity,
+  SHAPE_OPTIONS,
+  THEME_OPTIONS,
+  ThemeId,
+  appearanceFromSettings,
+} from "../types";
 import { useEffect, useState } from "react";
 
 interface Props {
@@ -11,7 +23,7 @@ interface Props {
   dataPath: string;
   onClose: () => void;
   onSave: (settings: AppSettings) => Promise<void>;
-  onPreviewAppearance: (theme: ThemeId, cardScale: number) => void;
+  onPreviewAppearance: (prefs: AppearancePrefs) => void;
 }
 
 type Section = "appearance" | "library" | "covers" | "updates";
@@ -44,20 +56,48 @@ export function SettingsModal({
 }: Props) {
   const [section, setSection] = useState<Section>("appearance");
   const [apiKey, setApiKey] = useState(settings.steamGridDbApiKey ?? "");
-  const [theme, setTheme] = useState<ThemeId>(
-    isThemeId(settings.theme) ? settings.theme : "emerald",
-  );
-  const [cardScale, setCardScale] = useState(settings.cardScale ?? 1);
+  const [theme, setTheme] = useState<ThemeId>("emerald");
+  const [cardScale, setCardScale] = useState(1);
+  const [showTitles, setShowTitles] = useState(true);
+  const [showStoreLabels, setShowStoreLabels] = useState(true);
+  const [gridDensity, setGridDensity] = useState<GridDensity>("normal");
+  const [coverCorners, setCoverCorners] = useState<CoverCorners>("soft");
+  const [coverShape, setCoverShape] = useState<CoverShape>("portrait");
+  const [reduceMotion, setReduceMotion] = useState(false);
   const [saving, setSaving] = useState(false);
   const [appVersion, setAppVersion] = useState<string>("…");
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({ kind: "idle" });
   const [pendingUpdate, setPendingUpdate] = useState<Awaited<ReturnType<typeof check>>>(null);
 
+  function currentPrefs(): AppearancePrefs {
+    return {
+      theme,
+      cardScale,
+      showTitles,
+      showStoreLabels,
+      gridDensity,
+      coverCorners,
+      coverShape,
+      reduceMotion,
+    };
+  }
+
+  function loadFromSettings(s: AppSettings) {
+    const a = appearanceFromSettings(s);
+    setApiKey(s.steamGridDbApiKey ?? "");
+    setTheme(a.theme);
+    setCardScale(a.cardScale);
+    setShowTitles(a.showTitles !== false);
+    setShowStoreLabels(a.showStoreLabels !== false);
+    setGridDensity(a.gridDensity ?? "normal");
+    setCoverCorners(a.coverCorners ?? "soft");
+    setCoverShape(a.coverShape ?? "portrait");
+    setReduceMotion(a.reduceMotion === true);
+  }
+
   useEffect(() => {
     if (open) {
-      setApiKey(settings.steamGridDbApiKey ?? "");
-      setTheme(isThemeId(settings.theme) ? settings.theme : "emerald");
-      setCardScale(typeof settings.cardScale === "number" ? settings.cardScale : 1);
+      loadFromSettings(settings);
       setUpdateStatus({ kind: "idle" });
       setPendingUpdate(null);
       setSection("appearance");
@@ -90,7 +130,7 @@ export function SettingsModal({
         kind: "error",
         message:
           message.includes("Could not fetch") || message.includes("error sending request")
-            ? "Could not reach GitHub Releases. Publish a release with latest.json (see UPDATES.md)."
+            ? "Could not reach GitHub Releases. Check your connection, or try again later."
             : message,
       });
     }
@@ -133,27 +173,26 @@ export function SettingsModal({
     updateStatus.kind === "downloading" ||
     updateStatus.kind === "restarting";
 
-  function previewTheme(next: ThemeId) {
-    setTheme(next);
-    onPreviewAppearance(next, cardScale);
+  function preview(patch: Partial<AppearancePrefs>) {
+    const next = { ...currentPrefs(), ...patch };
+    if (patch.theme) setTheme(patch.theme);
+    if (patch.cardScale != null) setCardScale(patch.cardScale);
+    if (patch.showTitles != null) setShowTitles(patch.showTitles);
+    if (patch.showStoreLabels != null) setShowStoreLabels(patch.showStoreLabels);
+    if (patch.gridDensity) setGridDensity(patch.gridDensity);
+    if (patch.coverCorners) setCoverCorners(patch.coverCorners);
+    if (patch.coverShape) setCoverShape(patch.coverShape);
+    if (patch.reduceMotion != null) setReduceMotion(patch.reduceMotion);
+    onPreviewAppearance(next);
   }
 
-  function previewScale(next: number) {
-    setCardScale(next);
-    onPreviewAppearance(theme, next);
+  function cancelAndClose() {
+    onPreviewAppearance(appearanceFromSettings(settings));
+    onClose();
   }
 
   return (
-    <div
-      className="settings-backdrop"
-      onClick={() => {
-        onPreviewAppearance(
-          isThemeId(settings.theme) ? settings.theme : "emerald",
-          typeof settings.cardScale === "number" ? settings.cardScale : 1,
-        );
-        onClose();
-      }}
-    >
+    <div className="settings-backdrop" onClick={cancelAndClose}>
       <div
         className="settings-panel settings-panel-wide"
         onClick={(e) => e.stopPropagation()}
@@ -179,7 +218,7 @@ export function SettingsModal({
           <div className="settings-body">
             {section === "appearance" && (
               <>
-                <p className="settings-lead">Theme colors and cover card size.</p>
+                <p className="settings-lead">Theme, card size, and how the grid looks.</p>
                 <div className="field">
                   <label>Theme</label>
                   <div className="theme-grid">
@@ -189,7 +228,7 @@ export function SettingsModal({
                         type="button"
                         className={`theme-swatch${theme === t.id ? " active" : ""}`}
                         data-theme-preview={t.id}
-                        onClick={() => previewTheme(t.id)}
+                        onClick={() => preview({ theme: t.id })}
                       >
                         <span className="theme-dot" />
                         {t.label}
@@ -208,8 +247,79 @@ export function SettingsModal({
                     max={1.4}
                     step={0.05}
                     value={cardScale}
-                    onChange={(e) => previewScale(Number(e.target.value))}
+                    onChange={(e) => preview({ cardScale: Number(e.target.value) })}
                   />
+                </div>
+                <div className="field">
+                  <label>Grid density</label>
+                  <div className="chip-row">
+                    {DENSITY_OPTIONS.map((d) => (
+                      <button
+                        key={d.id}
+                        type="button"
+                        className={`chip-btn${gridDensity === d.id ? " active" : ""}`}
+                        onClick={() => preview({ gridDensity: d.id })}
+                      >
+                        {d.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="field">
+                  <label>Cover shape</label>
+                  <div className="chip-row">
+                    {SHAPE_OPTIONS.map((s) => (
+                      <button
+                        key={s.id}
+                        type="button"
+                        className={`chip-btn${coverShape === s.id ? " active" : ""}`}
+                        onClick={() => preview({ coverShape: s.id })}
+                      >
+                        {s.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="field">
+                  <label>Cover corners</label>
+                  <div className="chip-row">
+                    {CORNER_OPTIONS.map((c) => (
+                      <button
+                        key={c.id}
+                        type="button"
+                        className={`chip-btn${coverCorners === c.id ? " active" : ""}`}
+                        onClick={() => preview({ coverCorners: c.id })}
+                      >
+                        {c.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="field toggle-stack">
+                  <label className="toggle-row">
+                    <input
+                      type="checkbox"
+                      checked={showTitles}
+                      onChange={(e) => preview({ showTitles: e.target.checked })}
+                    />
+                    Show game titles
+                  </label>
+                  <label className="toggle-row">
+                    <input
+                      type="checkbox"
+                      checked={showStoreLabels}
+                      onChange={(e) => preview({ showStoreLabels: e.target.checked })}
+                    />
+                    Show store labels
+                  </label>
+                  <label className="toggle-row">
+                    <input
+                      type="checkbox"
+                      checked={reduceMotion}
+                      onChange={(e) => preview({ reduceMotion: e.target.checked })}
+                    />
+                    Reduce motion
+                  </label>
                 </div>
               </>
             )}
@@ -305,17 +415,7 @@ export function SettingsModal({
         </div>
 
         <div className="settings-actions">
-          <button
-            type="button"
-            className="btn"
-            onClick={() => {
-              onPreviewAppearance(
-                isThemeId(settings.theme) ? settings.theme : "emerald",
-                typeof settings.cardScale === "number" ? settings.cardScale : 1,
-              );
-              onClose();
-            }}
-          >
+          <button type="button" className="btn" onClick={cancelAndClose}>
             Cancel
           </button>
           <button
@@ -330,6 +430,12 @@ export function SettingsModal({
                   steamGridDbApiKey: apiKey.trim() || null,
                   theme,
                   cardScale,
+                  showTitles,
+                  showStoreLabels,
+                  gridDensity,
+                  coverCorners,
+                  coverShape,
+                  reduceMotion,
                 });
                 onClose();
               } finally {

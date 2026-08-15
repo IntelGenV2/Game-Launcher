@@ -19,8 +19,12 @@ lerna-debug.log*
 src-tauri/target/
 src-tauri/gen/schemas/
 
-# Signed release upload folder (upload to GitHub Releases only)
+# Local release packaging output
 release-assets/
+
+# Maintainer-only notes (keep local — not for the public repo)
+UPDATES.md
+RELEASES.md
 
 # Updater / env secrets — never commit
 *.key

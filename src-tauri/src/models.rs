@@ -11,6 +11,12 @@ pub enum Store {
     Ubisoft,
     Ea,
     Roblox,
+    Wargaming,
+    Riot,
+    Rockstar,
+    Amazon,
+    Itch,
+    Humble,
     Manual,
 }
 
@@ -25,6 +31,12 @@ impl Store {
             Store::Ubisoft => "ubisoft",
             Store::Ea => "ea",
             Store::Roblox => "roblox",
+            Store::Wargaming => "wargaming",
+            Store::Riot => "riot",
+            Store::Rockstar => "rockstar",
+            Store::Amazon => "amazon",
+            Store::Itch => "itch",
+            Store::Humble => "humble",
             Store::Manual => "manual",
         }
     }
@@ -39,6 +51,12 @@ impl Store {
             "ubisoft" => Some(Store::Ubisoft),
             "ea" => Some(Store::Ea),
             "roblox" => Some(Store::Roblox),
+            "wargaming" => Some(Store::Wargaming),
+            "riot" => Some(Store::Riot),
+            "rockstar" => Some(Store::Rockstar),
+            "amazon" => Some(Store::Amazon),
+            "itch" => Some(Store::Itch),
+            "humble" => Some(Store::Humble),
             "manual" => Some(Store::Manual),
             _ => None,
         }
@@ -85,6 +103,12 @@ pub struct AppSettings {
     pub theme: Option<String>,
     pub card_scale: Option<f64>,
     pub library_order: Option<String>,
+    pub show_titles: Option<bool>,
+    pub show_store_labels: Option<bool>,
+    pub grid_density: Option<String>,
+    pub cover_corners: Option<String>,
+    pub cover_shape: Option<String>,
+    pub reduce_motion: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

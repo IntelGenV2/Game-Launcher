@@ -1,11 +1,17 @@
+mod amazon;
 mod battlenet;
 mod ea;
 mod epic;
 mod gog;
+mod humble;
+mod itch;
 mod manual;
+pub mod riot;
 mod roblox;
+pub mod rockstar;
 mod steam;
 mod ubisoft;
+mod wargaming;
 mod xbox;
 
 use crate::models::DiscoveredGame;
@@ -23,6 +29,12 @@ pub fn scan_all() -> Result<Vec<DiscoveredGame>> {
         ("Xbox", xbox::scan()),
         ("EA", ea::scan()),
         ("Roblox", roblox::scan()),
+        ("Wargaming", wargaming::scan()),
+        ("Riot", riot::scan()),
+        ("Rockstar", rockstar::scan()),
+        ("Amazon", amazon::scan()),
+        ("itch.io", itch::scan()),
+        ("Humble", humble::scan()),
     ] {
         match result {
             Ok(mut g) => games.append(&mut g),

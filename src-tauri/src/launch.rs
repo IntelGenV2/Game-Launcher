@@ -19,14 +19,22 @@ pub fn launch_game(game: &Game) -> Result<()> {
             let uri = format!("steam://rungameid/{}", game.launch_target);
             open_uri(&uri)
         }
-        Store::Epic | Store::Gog | Store::Battlenet | Store::Ubisoft => {
+        Store::Epic | Store::Gog | Store::Battlenet | Store::Ubisoft | Store::Amazon => {
             if game.launch_target.contains("://") {
                 open_uri(&game.launch_target)
             } else {
                 spawn_exe(&game.launch_target)
             }
         }
-        Store::Xbox | Store::Ea | Store::Roblox | Store::Manual => {
+        Store::Riot => crate::scanners::riot::launch(game),
+        Store::Rockstar => crate::scanners::rockstar::launch(game),
+        Store::Xbox
+        | Store::Ea
+        | Store::Roblox
+        | Store::Wargaming
+        | Store::Itch
+        | Store::Humble
+        | Store::Manual => {
             if game.launch_target.contains("://") {
                 open_uri(&game.launch_target)
             } else {

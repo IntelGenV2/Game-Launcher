@@ -1,6 +1,6 @@
 [package]
 name = "game-launcher"
-version = "0.2.1"
+version = "0.2.5"
 description = "IntelGen Game Launcher"
 authors = ["IntelGen"]
 edition = "2021"

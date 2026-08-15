@@ -23,6 +23,9 @@
   --font: "Outfit", system-ui, sans-serif;
   --font-display: "Syne", "Outfit", sans-serif;
   --card-min: 150px;
+  --grid-gap: 1.1rem;
+  --cover-radius: 14px;
+  --cover-ratio: 2 / 3;
   --shell-glow-a: rgba(62, 207, 142, 0.16);
   --shell-glow-b: rgba(80, 140, 255, 0.12);
 }

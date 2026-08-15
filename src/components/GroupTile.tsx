@@ -13,6 +13,7 @@ interface Props {
   onRename: (group: GameGroup) => void;
   onDelete: (group: GameGroup) => void;
   onAddGames?: () => void;
+  focusActive?: boolean;
 }
 
 export function GroupTile({
@@ -27,6 +28,7 @@ export function GroupTile({
   onRename,
   onDelete,
   onAddGames,
+  focusActive = false,
 }: Props) {
   const [menuOpen, setMenuOpen] = useState(false);
   const suppressClick = useRef(false);
@@ -56,10 +58,11 @@ export function GroupTile({
     <div
       className={`tile group-tile${dropActive ? " drop-target" : ""}${
         dragActive ? " tile-dragging" : ""
-      }`}
+      }${focusActive ? " tile-focused" : ""}${menuOpen ? " menu-open" : ""}`}
       style={{ animationDelay: `${Math.min(index, 24) * 0.02}s` }}
       role="button"
       tabIndex={0}
+      data-focus-key={`group:${group.id}`}
       data-drop-group={group.id}
       onPointerDown={(e) => {
         if (e.button !== 0) return;
@@ -93,41 +96,6 @@ export function GroupTile({
           </button>
         </div>
 
-        {menuOpen && (
-          <div className="context-menu" ref={menuRef} onClick={(e) => e.stopPropagation()}>
-            {onAddGames && (
-              <button
-                type="button"
-                onClick={() => {
-                  onAddGames();
-                  setMenuOpen(false);
-                }}
-              >
-                Add games…
-              </button>
-            )}
-            <button
-              type="button"
-              onClick={() => {
-                onRename(group);
-                setMenuOpen(false);
-              }}
-            >
-              Rename group
-            </button>
-            <button
-              type="button"
-              className="danger"
-              onClick={() => {
-                onDelete(group);
-                setMenuOpen(false);
-              }}
-            >
-              Delete group
-            </button>
-          </div>
-        )}
-
         <div className="stack-layers" aria-hidden>
           {covers.length === 0 ? (
             <div className="cover-fallback stack-card">?</div>
@@ -153,6 +121,42 @@ export function GroupTile({
           )}
         </div>
       </div>
+
+      {menuOpen && (
+        <div className="context-menu" ref={menuRef} onClick={(e) => e.stopPropagation()}>
+          {onAddGames && (
+            <button
+              type="button"
+              onClick={() => {
+                onAddGames();
+                setMenuOpen(false);
+              }}
+            >
+              Add games…
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => {
+              onRename(group);
+              setMenuOpen(false);
+            }}
+          >
+            Rename group
+          </button>
+          <button
+            type="button"
+            className="danger"
+            onClick={() => {
+              onDelete(group);
+              setMenuOpen(false);
+            }}
+          >
+            Delete group
+          </button>
+        </div>
+      )}
+
       <div className="tile-title">{group.name}</div>
       <div className="tile-store">
         {members.length} {members.length === 1 ? "game" : "games"}

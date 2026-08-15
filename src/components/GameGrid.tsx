@@ -35,9 +35,16 @@ interface Props {
   onRenameGroup: (group: GameGroup) => void;
   onDeleteGroup: (group: GameGroup) => void;
   onAddToGroup: (game: Game, group: GameGroup) => void;
+  onRequestAddToGroup: (game: Game) => void;
+  onCreateGroup: () => void;
   onRemoveFromGroup: (group: GameGroup, game: Game) => void;
   onReorder: (nextOrder: string[]) => void;
   onAddGamesToGroup: (group: GameGroup) => void;
+  focusKey?: string | null;
+  selectMode?: boolean;
+  selectedIds?: Set<string>;
+  onToggleSelect?: (game: Game) => void;
+  onFocusablesChange?: (keys: string[]) => void;
 }
 
 function groupAccent(id: string): string {
@@ -74,9 +81,16 @@ export function GameGrid({
   onRenameGroup,
   onDeleteGroup,
   onAddToGroup,
+  onRequestAddToGroup,
+  onCreateGroup,
   onRemoveFromGroup,
   onReorder,
   onAddGamesToGroup,
+  focusKey = null,
+  selectMode = false,
+  selectedIds,
+  onToggleSelect,
+  onFocusablesChange,
 }: Props) {
   const gamesGridRef = useRef<HTMLDivElement>(null);
   const [cols, setCols] = useState(1);
@@ -172,6 +186,29 @@ export function GameGrid({
       mo.disconnect();
     };
   }, [ungroupedGames.length, groupItems.length]);
+
+  const focusables = useMemo(() => {
+    const keys: string[] = [];
+    for (const item of groupItems) {
+      keys.push(`group:${item.group.id}`);
+      if (item.expanded) {
+        for (const g of item.members) keys.push(`game:${g.id}`);
+      }
+    }
+    for (const g of ungroupedGames) keys.push(`game:${g.id}`);
+    return keys;
+  }, [groupItems, ungroupedGames]);
+
+  useEffect(() => {
+    onFocusablesChange?.(focusables);
+  }, [focusables, onFocusablesChange]);
+
+  useEffect(() => {
+    if (!focusKey) return;
+    const safe = focusKey.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+    const el = document.querySelector(`[data-focus-key="${safe}"]`);
+    el?.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "smooth" });
+  }, [focusKey]);
 
   useEffect(() => {
     document.body.classList.toggle("library-dragging", drag != null);
@@ -354,13 +391,14 @@ export function GameGrid({
                       type="button"
                       className={`tile group-collapse-tile${
                         dropKey === `group:${item.group.id}` ? " drop-target" : ""
-                      }`}
+                      }${focusKey === `group:${item.group.id}` ? " tile-focused" : ""}`}
                       style={
                         {
                           animationDelay: `${Math.min(index, 12) * 0.02}s`,
                           "--group-accent": item.accent,
                         } as React.CSSProperties
                       }
+                      data-focus-key={`group:${item.group.id}`}
                       data-drop-group={item.group.id}
                       onClick={() => onExpandedGroupChange(null)}
                       title="Collapse group"
@@ -384,12 +422,17 @@ export function GameGrid({
                         inGroup={item.group}
                         groupAccent={item.accent}
                         expandIndex={i}
+                        focusActive={focusKey === `game:${game.id}`}
+                        selectMode={selectMode}
+                        selected={selectedIds?.has(game.id) ?? false}
+                        onToggleSelect={onToggleSelect}
                         onOpen={onOpen}
                         onLaunch={onLaunch}
                         onToggleFavorite={onToggleFavorite}
                         onHide={onHide}
                         onOpenFolder={onOpenFolder}
-                        onAddToGroup={onAddToGroup}
+                        onAddToGroup={onRequestAddToGroup}
+                        onCreateGroup={onCreateGroup}
                         onRemoveFromGroup={() => onRemoveFromGroup(item.group, game)}
                       />
                     ))}
@@ -406,6 +449,7 @@ export function GameGrid({
                   index={index}
                   dropActive={dropKey === `group:${item.group.id}`}
                   dragActive={activeKey === `group:${item.group.id}`}
+                  focusActive={focusKey === `group:${item.group.id}`}
                   onPointerDragStart={(e, g) =>
                     beginPointerSession(e, { type: "group", groupId: g.id })
                   }
@@ -434,6 +478,10 @@ export function GameGrid({
                 groups={groups}
                 dropActive={dropKey === layoutKey}
                 dragActive={activeKey === layoutKey}
+                focusActive={focusKey === `game:${game.id}`}
+                selectMode={selectMode}
+                selected={selectedIds?.has(game.id) ?? false}
+                onToggleSelect={onToggleSelect}
                 onPointerDragStart={(e, g) =>
                   beginPointerSession(e, { type: "game", gameId: g.id })
                 }
@@ -442,7 +490,8 @@ export function GameGrid({
                 onToggleFavorite={onToggleFavorite}
                 onHide={onHide}
                 onOpenFolder={onOpenFolder}
-                onAddToGroup={onAddToGroup}
+                onAddToGroup={onRequestAddToGroup}
+                onCreateGroup={onCreateGroup}
               />
             );
           })}

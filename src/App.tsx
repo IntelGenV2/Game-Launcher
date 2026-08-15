@@ -3,6 +3,8 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AddToGroupModal } from "./components/AddToGroupModal";
+import { BulkAddToGroupModal } from "./components/BulkAddToGroupModal";
 import { GameDetail } from "./components/GameDetail";
 import { GameGrid } from "./components/GameGrid";
 import { GroupAddModal } from "./components/GroupAddModal";
@@ -10,9 +12,12 @@ import { GroupNameModal } from "./components/GroupNameModal";
 import { CustomSelect } from "./components/CustomSelect";
 import { SettingsModal } from "./components/SettingsModal";
 import { UpdateChecker } from "./components/UpdateChecker";
+import { isTypingTarget, useGamepad, type PadAction } from "./hooks/useGamepad";
 import {
   AppSettings,
+  AppearancePrefs,
   applyAppearance,
+  appearanceFromSettings,
   buildDefaultLibraryOrder,
   FILTER_OPTIONS,
   Game,
@@ -20,14 +25,12 @@ import {
   gameOrderKey,
   groupOrderKey,
   isSortMode,
-  isThemeId,
   LibraryFilter,
   LibraryStats,
   parseLibraryOrder,
   reconcileLibraryOrder,
   SORT_OPTIONS,
   SortMode,
-  ThemeId,
 } from "./types";
 import "./styles/theme.css";
 import "./styles/App.css";
@@ -47,6 +50,12 @@ function App() {
     theme: "emerald",
     cardScale: 1,
     libraryOrder: null,
+    showTitles: true,
+    showStoreLabels: true,
+    gridDensity: "normal",
+    coverCorners: "soft",
+    coverShape: "portrait",
+    reduceMotion: false,
   });
   const [stats, setStats] = useState<LibraryStats>({ total: 0, favorites: 0, missing: 0 });
   const [dataPath, setDataPath] = useState("");
@@ -56,12 +65,28 @@ function App() {
   const [expandedGroupId, setExpandedGroupId] = useState<string | null>(null);
   const [libraryOrder, setLibraryOrder] = useState<string[]>([]);
   const [addToGroupTarget, setAddToGroupTarget] = useState<GameGroup | null>(null);
+  const [addGameToGroupTarget, setAddGameToGroupTarget] = useState<Game | null>(null);
   const [groupNameModal, setGroupNameModal] = useState<
     null | { mode: "create" } | { mode: "rename"; group: GameGroup }
   >(null);
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  const [bulkAddOpen, setBulkAddOpen] = useState(false);
+  const [addMenuOpen, setAddMenuOpen] = useState(false);
+  const [focusKey, setFocusKey] = useState<string | null>(null);
+  const [focusables, setFocusables] = useState<string[]>([]);
+  const [navActive, setNavActive] = useState(false);
   const coverLoaded = useRef<Set<string>>(new Set());
   const sessionStarts = useRef<Record<string, number>>({});
   const toastTimer = useRef<number | null>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const addMenuRef = useRef<HTMLDivElement>(null);
+  const focusKeyRef = useRef<string | null>(null);
+  const focusablesRef = useRef<string[]>([]);
+  const navActiveRef = useRef(false);
+  focusKeyRef.current = focusKey;
+  focusablesRef.current = focusables;
+  navActiveRef.current = navActive;
 
   const showHidden = libraryFilter === "hidden";
 
@@ -81,9 +106,7 @@ function App() {
   }, []);
 
   const applySettingsAppearance = useCallback((s: AppSettings) => {
-    const theme: ThemeId = isThemeId(s.theme) ? s.theme : "emerald";
-    const scale = typeof s.cardScale === "number" && s.cardScale > 0 ? s.cardScale : 1;
-    applyAppearance(theme, scale);
+    applyAppearance(appearanceFromSettings(s));
   }, []);
 
   const refreshGroups = useCallback(async () => {
@@ -320,7 +343,7 @@ function App() {
   }, [games, groups]);
 
   const persistLibraryOrder = useCallback(
-    (nextOrder: string[], forceCustom = true) => {
+    (nextOrder: string[], forceCustom = false) => {
       const reconciled = reconcileLibraryOrder(nextOrder, games, groups);
       setLibraryOrder(reconciled);
       const nextSort: SortMode = forceCustom ? "custom" : sortBy;
@@ -334,6 +357,34 @@ function App() {
       invoke("save_settings", { settings: nextSettings }).catch(() => undefined);
     },
     [games, groups, settings, sortBy],
+  );
+
+  /** Snapshot visible order so switching to Custom doesn’t reshuffle games. */
+  const captureCurrentOrder = useCallback(
+    (extraGroup?: GameGroup | null) => {
+      if (sortBy === "custom") {
+        const next = [...libraryOrder];
+        if (extraGroup) {
+          const key = groupOrderKey(extraGroup.id);
+          if (!next.includes(key)) next.unshift(key);
+        }
+        return next;
+      }
+
+      const grouped = new Set(groups.flatMap((g) => g.gameIds));
+      const groupKeys = [...groups]
+        .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name))
+        .map((g) => groupOrderKey(g.id));
+      if (extraGroup) {
+        const key = groupOrderKey(extraGroup.id);
+        if (!groupKeys.includes(key)) groupKeys.unshift(key);
+      }
+      const gameKeys = filtered
+        .filter((g) => !grouped.has(g.id))
+        .map((g) => gameOrderKey(g.id));
+      return [...groupKeys, ...gameKeys];
+    },
+    [sortBy, libraryOrder, groups, filtered],
   );
 
   const libraryOrderRef = useRef(libraryOrder);
@@ -575,7 +626,7 @@ function App() {
       gameIds: [],
     });
     await refreshGroupsLocal(group);
-    persistLibraryOrder([...libraryOrder, groupOrderKey(group.id)], true);
+    persistLibraryOrder(captureCurrentOrder(group), sortBy === "custom");
     showToast(`Created “${group.name}”`);
     setExpandedGroupId(group.id);
   }
@@ -587,11 +638,10 @@ function App() {
         gameId: game.id,
       });
       await refreshGroups();
-      persistLibraryOrder(
-        libraryOrder.filter((k) => k !== gameOrderKey(game.id)),
-        true,
-      );
+      const seeded = captureCurrentOrder().filter((k) => k !== gameOrderKey(game.id));
+      persistLibraryOrder(seeded, sortBy === "custom");
       showToast(`Added to “${group.name}”`);
+      setAddGameToGroupTarget(null);
     } catch (e) {
       showToast(String(e), true);
     }
@@ -621,7 +671,7 @@ function App() {
       const insertAt = Math.max(0, libraryOrder.indexOf(groupOrderKey(group.id)));
       const next = [...without];
       next.splice(insertAt, 0, ...memberKeys.filter((k) => !without.includes(k)));
-      persistLibraryOrder(next, true);
+      persistLibraryOrder(next, sortBy === "custom");
       showToast(`Deleted “${group.name}”`);
     } catch (e) {
       showToast(String(e), true);
@@ -640,7 +690,7 @@ function App() {
       const idx = next.indexOf(gKey);
       if (idx >= 0) next.splice(idx + 1, 0, gameOrderKey(game.id));
       else next.push(gameOrderKey(game.id));
-      persistLibraryOrder(next, true);
+      persistLibraryOrder(next, sortBy === "custom");
       showToast(`Removed from “${group.name}”`);
     } catch (e) {
       showToast(String(e), true);
@@ -668,8 +718,334 @@ function App() {
     return () => window.removeEventListener("beforeunload", save);
   }, [settings, sortBy, libraryOrder]);
 
+  const modalOpen =
+    settingsOpen ||
+    addToGroupTarget != null ||
+    addGameToGroupTarget != null ||
+    groupNameModal != null ||
+    bulkAddOpen;
+
+  const moveFocus = useCallback(
+    (dx: number, dy: number) => {
+      const keys = focusablesRef.current;
+      if (keys.length === 0) return;
+      const colsGuess = Math.max(
+        1,
+        Math.floor(
+          ((document.querySelector(".game-grid") as HTMLElement | null)?.clientWidth ?? 600) /
+            ((parseFloat(
+              getComputedStyle(document.documentElement).getPropertyValue("--card-min"),
+            ) || 150) +
+              18),
+        ),
+      );
+      setNavActive(true);
+      let idx = focusKeyRef.current ? keys.indexOf(focusKeyRef.current) : -1;
+      if (idx < 0) {
+        setFocusKey(keys[0]);
+        return;
+      }
+      if (dx !== 0) {
+        idx = Math.max(0, Math.min(keys.length - 1, idx + dx));
+      } else if (dy !== 0) {
+        idx = Math.max(0, Math.min(keys.length - 1, idx + dy * colsGuess));
+      }
+      setFocusKey(keys[idx]);
+    },
+    [],
+  );
+
+  const activateFocus = useCallback(() => {
+    const keys = focusablesRef.current;
+    if (!navActiveRef.current || !focusKeyRef.current) {
+      if (keys[0]) {
+        setNavActive(true);
+        setFocusKey(keys[0]);
+      }
+      return;
+    }
+    const key = focusKeyRef.current;
+    if (key.startsWith("group:")) {
+      const id = key.slice(6);
+      setExpandedGroupId((cur) => (cur === id ? null : id));
+      return;
+    }
+    if (key.startsWith("game:")) {
+      const id = key.slice(5);
+      const game = games.find((g) => g.id === id);
+      if (!game) return;
+      if (selectMode) {
+        setSelectedIds((prev) => {
+          const next = new Set(prev);
+          if (next.has(id)) next.delete(id);
+          else next.add(id);
+          return next;
+        });
+      } else {
+        setSelectedId(id);
+        setNavActive(false);
+      }
+    }
+  }, [games, selectMode]);
+
+  const exitSelectMode = useCallback(() => {
+    setSelectMode(false);
+    setSelectedIds(new Set());
+    setBulkAddOpen(false);
+  }, []);
+
+  const toggleSelectMode = useCallback(() => {
+    setSelectMode((v) => {
+      if (v) setSelectedIds(new Set());
+      return !v;
+    });
+    setAddMenuOpen(false);
+  }, []);
+
+  const handleBulkFavorite = useCallback(async () => {
+    const ids = [...selectedIds];
+    for (const id of ids) {
+      const g = games.find((x) => x.id === id);
+      if (g && !g.favorite) await handleToggleFavorite(g);
+    }
+    showToast(`Favorited ${ids.length}`);
+    exitSelectMode();
+  }, [selectedIds, games, exitSelectMode, showToast]);
+
+  const handleBulkHide = useCallback(async () => {
+    const ids = [...selectedIds];
+    for (const id of ids) {
+      const g = games.find((x) => x.id === id);
+      if (g && !g.hidden) await handleHide(g);
+    }
+    showToast(`Hidden ${ids.length}`);
+    exitSelectMode();
+  }, [selectedIds, games, exitSelectMode, showToast]);
+
+  const handleBulkAddToGroup = useCallback(
+    async (group: GameGroup) => {
+      const ids = [...selectedIds];
+      let n = 0;
+      for (const id of ids) {
+        const g = games.find((x) => x.id === id);
+        if (!g || group.gameIds.includes(id)) continue;
+        try {
+          await invoke("add_game_to_group", { groupId: group.id, gameId: id });
+          n++;
+        } catch {
+          /* skip failures */
+        }
+      }
+      await refreshGroups();
+      const seeded = captureCurrentOrder().filter((k) => !ids.includes(k.slice(5)));
+      persistLibraryOrder(seeded, sortBy === "custom");
+      showToast(`Added ${n} to “${group.name}”`);
+      setBulkAddOpen(false);
+      exitSelectMode();
+    },
+    [
+      selectedIds,
+      games,
+      refreshGroups,
+      captureCurrentOrder,
+      persistLibraryOrder,
+      sortBy,
+      showToast,
+      exitSelectMode,
+    ],
+  );
+
+  const handlePadAction = useCallback(
+    (action: PadAction) => {
+      if (modalOpen) {
+        if (action === "back") {
+          setSettingsOpen(false);
+          setAddToGroupTarget(null);
+          setAddGameToGroupTarget(null);
+          setGroupNameModal(null);
+          setBulkAddOpen(false);
+        }
+        return;
+      }
+      if (selectedGame) {
+        if (action === "back") setSelectedId(null);
+        else if (action === "confirm") void handleLaunch(selectedGame);
+        else if (action === "favorite") void handleToggleFavorite(selectedGame);
+        return;
+      }
+      if (
+        action === "up" ||
+        action === "down" ||
+        action === "left" ||
+        action === "right" ||
+        action === "confirm"
+      ) {
+        setNavActive(true);
+      }
+      if (action === "up") moveFocus(0, -1);
+      else if (action === "down") moveFocus(0, 1);
+      else if (action === "left") moveFocus(-1, 0);
+      else if (action === "right") moveFocus(1, 0);
+      else if (action === "confirm") activateFocus();
+      else if (action === "back") {
+        if (addMenuOpen) setAddMenuOpen(false);
+        else if (navActiveRef.current) {
+          setNavActive(false);
+          setFocusKey(null);
+        } else if (selectMode) exitSelectMode();
+        else if (expandedGroupId) setExpandedGroupId(null);
+        else if (query) setQuery("");
+      } else if (action === "favorite") {
+        const key = focusKeyRef.current;
+        if (key?.startsWith("game:")) {
+          const g = games.find((x) => x.id === key.slice(5));
+          if (g) void handleToggleFavorite(g);
+        }
+      } else if (action === "select") toggleSelectMode();
+    },
+    [
+      modalOpen,
+      selectedGame,
+      moveFocus,
+      activateFocus,
+      addMenuOpen,
+      selectMode,
+      exitSelectMode,
+      expandedGroupId,
+      query,
+      games,
+      toggleSelectMode,
+    ],
+  );
+
+  const gamepadConnected = useGamepad(handlePadAction, !loading);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (modalOpen) {
+        if (e.key === "Escape") {
+          setSettingsOpen(false);
+          setAddToGroupTarget(null);
+          setAddGameToGroupTarget(null);
+          setGroupNameModal(null);
+          setBulkAddOpen(false);
+        }
+        return;
+      }
+
+      if (e.key === "Escape") {
+        e.preventDefault();
+        if (addMenuOpen) {
+          setAddMenuOpen(false);
+          return;
+        }
+        if (selectedGame) {
+          setSelectedId(null);
+          return;
+        }
+        if (selectMode) {
+          exitSelectMode();
+          return;
+        }
+        if (document.activeElement === searchRef.current && query) {
+          setQuery("");
+          return;
+        }
+        if (expandedGroupId) {
+          setExpandedGroupId(null);
+          return;
+        }
+        if (query) setQuery("");
+        (document.activeElement as HTMLElement | null)?.blur?.();
+        return;
+      }
+
+      if (isTypingTarget(e.target)) {
+        if (e.key === "Escape") (e.target as HTMLElement).blur();
+        return;
+      }
+
+      if (e.key === "/" || (e.key === "k" && (e.ctrlKey || e.metaKey))) {
+        e.preventDefault();
+        if (!selectedGame) searchRef.current?.focus();
+        return;
+      }
+
+      if (selectedGame) {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          void handleLaunch(selectedGame);
+        }
+        return;
+      }
+
+      if (e.key === "s" || e.key === "S") {
+        e.preventDefault();
+        toggleSelectMode();
+        return;
+      }
+      if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        moveFocus(-1, 0);
+      } else if (e.key === "ArrowRight") {
+        e.preventDefault();
+        moveFocus(1, 0);
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        moveFocus(0, -1);
+      } else if (e.key === "ArrowDown") {
+        e.preventDefault();
+        moveFocus(0, 1);
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        activateFocus();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [
+    addMenuOpen,
+    selectedGame,
+    selectMode,
+    exitSelectMode,
+    query,
+    expandedGroupId,
+    toggleSelectMode,
+    moveFocus,
+    activateFocus,
+  ]);
+
+  useEffect(() => {
+    if (!addMenuOpen) return;
+    const onDoc = (e: MouseEvent) => {
+      if (!addMenuRef.current?.contains(e.target as Node)) setAddMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [addMenuOpen]);
+
+  useEffect(() => {
+    const clearNavOnMouse = (e: PointerEvent) => {
+      if (!navActiveRef.current) return;
+      if (e.pointerType && e.pointerType !== "mouse") return;
+      setNavActive(false);
+      setFocusKey(null);
+    };
+    window.addEventListener("pointerdown", clearNavOnMouse, true);
+    return () => window.removeEventListener("pointerdown", clearNavOnMouse, true);
+  }, []);
+
+  useEffect(() => {
+    if (!navActive) return;
+    if (focusKey && focusables.includes(focusKey)) return;
+    setFocusKey(focusables[0] ?? null);
+    if (focusables.length === 0) setNavActive(false);
+  }, [focusables, focusKey, navActive]);
+
+  const showFocus = navActive && !selectedGame;
+
   return (
-    <div className="app-shell">
+    <div className={`app-shell${gamepadConnected ? " gamepad-connected" : ""}`}>
       <header className="topbar">
         <div className="brand">
           <img src="/intelgen-icon.png" alt="IntelGen" className="brand-mark" />
@@ -680,9 +1056,10 @@ function App() {
             <div className="search-wrap">
               <span className="icon">⌕</span>
               <input
+                ref={searchRef}
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="Search…"
+                placeholder="Search…  /"
                 aria-label="Search games"
               />
             </div>
@@ -698,25 +1075,98 @@ function App() {
               onChange={persistSort}
               ariaLabel="Sort games"
             />
-            <button type="button" className="btn" onClick={() => void handleCreateGroup()}>
-              Create group
-            </button>
           </div>
         )}
         <div className="top-actions">
-          <button type="button" className="btn" onClick={handleAddManual}>
-            Add game
-          </button>
+          {!selectedGame && (
+            <>
+              <div className="icon-menu" ref={addMenuRef}>
+                <button
+                  type="button"
+                  className={`icon-btn${addMenuOpen ? " active" : ""}`}
+                  aria-label="Add"
+                  data-tip="Add"
+                  aria-expanded={addMenuOpen}
+                  aria-haspopup="menu"
+                  onClick={() => setAddMenuOpen((v) => !v)}
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden>
+                    <path
+                      fill="currentColor"
+                      d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6V5z"
+                    />
+                  </svg>
+                </button>
+                {addMenuOpen && (
+                  <div className="icon-menu-panel" role="menu">
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setAddMenuOpen(false);
+                        void handleAddManual();
+                      }}
+                    >
+                      Game
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setAddMenuOpen(false);
+                        void handleCreateGroup();
+                      }}
+                    >
+                      Group
+                    </button>
+                  </div>
+                )}
+              </div>
+              <button
+                type="button"
+                className={`icon-btn${selectMode ? " active" : ""}`}
+                aria-label={selectMode ? "Exit select" : "Select"}
+                data-tip="Select"
+                aria-pressed={selectMode}
+                onClick={toggleSelectMode}
+              >
+                <svg viewBox="0 0 24 24" aria-hidden>
+                  <path
+                    fill="currentColor"
+                    d="M9 3h6v2H9V3zm-4 4h14v2H5V7zm2 4h10v2H7v-2zm2 4h6v2H9v-2zm-2 4h10v2H7v-2z"
+                  />
+                </svg>
+              </button>
+            </>
+          )}
           <button
             type="button"
-            className="btn btn-primary"
+            className="icon-btn"
+            aria-label={scanning ? "Scanning" : "Rescan"}
+            data-tip={scanning ? "Scanning…" : "Rescan"}
             onClick={handleRescan}
             disabled={scanning}
           >
-            {scanning ? "Scanning…" : "Rescan"}
+            <svg viewBox="0 0 24 24" aria-hidden className={scanning ? "spin" : undefined}>
+              <path
+                fill="currentColor"
+                d="M12 6V3L8 7l4 4V8c2.76 0 5 2.24 5 5a5 5 0 0 1-8.9 3.1L6.7 17.5A7 7 0 0 0 19 13c0-3.87-3.13-7-7-7zm0 12v3l4-4-4-4v3a5 5 0 0 1-5-5c0-1.1.36-2.12.97-2.95l-1.4-1.41A7 7 0 0 0 5 13c0 3.87 3.13 7 7 7z"
+              />
+            </svg>
           </button>
-          <button type="button" className="btn" onClick={() => setSettingsOpen(true)}>
-            Settings
+          <button
+            type="button"
+            className="icon-btn"
+            aria-label="Settings"
+            data-tip="Settings"
+            onClick={() => setSettingsOpen(true)}
+          >
+            <svg viewBox="0 0 24 24" aria-hidden>
+              <path
+                fill="currentColor"
+                d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.1 7.1 0 0 0-1.63-.94l-.36-2.54A.5.5 0 0 0 13.9 2h-3.8a.5.5 0 0 0-.49.42l-.36 2.54c-.59.24-1.13.55-1.63.94l-2.39-.96a.5.5 0 0 0-.6.22L2.71 8.48a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94L2.83 14.58a.5.5 0 0 0-.12.64l1.92 3.32c.14.24.43.34.68.22l2.39-.96c.5.39 1.04.71 1.63.94l.36 2.54c.05.24.25.42.49.42h3.8c.24 0 .44-.18.49-.42l.36-2.54c.59-.24 1.13-.55 1.63-.94l2.39.96c.25.12.54.02.68-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58zM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7z"
+              />
+            </svg>
           </button>
         </div>
       </header>
@@ -774,8 +1224,25 @@ function App() {
                     : buildDefaultLibraryOrder(filtered, groups)
                 }
                 expandedGroupId={expandedGroupId}
-                onExpandedGroupChange={setExpandedGroupId}
+                onExpandedGroupChange={(id) => {
+                  setNavActive(false);
+                  setExpandedGroupId(id);
+                }}
+                focusKey={showFocus ? focusKey : null}
+                selectMode={selectMode}
+                selectedIds={selectedIds}
+                onToggleSelect={(g) => {
+                  setSelectedIds((prev) => {
+                    const next = new Set(prev);
+                    if (next.has(g.id)) next.delete(g.id);
+                    else next.add(g.id);
+                    return next;
+                  });
+                  setFocusKey(`game:${g.id}`);
+                }}
+                onFocusablesChange={setFocusables}
                 onOpen={(g) => {
+                  setNavActive(false);
                   setSelectedId(g.id);
                 }}
                 onLaunch={handleLaunch}
@@ -786,6 +1253,8 @@ function App() {
                 onRenameGroup={handleRenameGroup}
                 onDeleteGroup={handleDeleteGroup}
                 onAddToGroup={handleAddToGroup}
+                onRequestAddToGroup={(g) => setAddGameToGroupTarget(g)}
+                onCreateGroup={handleCreateGroup}
                 onRemoveFromGroup={handleRemoveFromGroup}
                 onReorder={(next) => persistLibraryOrder(next, true)}
                 onAddGamesToGroup={(g) => setAddToGroupTarget(g)}
@@ -794,6 +1263,72 @@ function App() {
           </>
         )}
       </main>
+
+      {selectMode && !selectedGame && (
+        <div className="bulk-bar" role="toolbar" aria-label="Bulk actions">
+          <span className="bulk-count">{selectedIds.size} selected</span>
+          <button
+            type="button"
+            className="btn"
+            disabled={selectedIds.size === 0}
+            onClick={() => void handleBulkFavorite()}
+          >
+            Favorite
+          </button>
+          <button
+            type="button"
+            className="btn"
+            disabled={selectedIds.size === 0}
+            onClick={() => void handleBulkHide()}
+          >
+            Hide
+          </button>
+          <button
+            type="button"
+            className="btn"
+            disabled={selectedIds.size === 0}
+            onClick={() => setBulkAddOpen(true)}
+          >
+            Add to group…
+          </button>
+          <button type="button" className="btn" onClick={exitSelectMode}>
+            Cancel
+          </button>
+        </div>
+      )}
+
+      {gamepadConnected && !selectedGame && !modalOpen && (
+        <div className="gamepad-hint" aria-hidden>
+          <span>D-pad move</span>
+          <span>A open</span>
+          <span>B back</span>
+          <span>X favorite</span>
+          <span>View select</span>
+        </div>
+      )}
+
+      <BulkAddToGroupModal
+        open={bulkAddOpen}
+        gameCount={selectedIds.size}
+        groups={groups}
+        onClose={() => setBulkAddOpen(false)}
+        onPick={(group) => void handleBulkAddToGroup(group)}
+        onCreateGroup={() => {
+          setBulkAddOpen(false);
+          void handleCreateGroup();
+        }}
+      />
+
+      <AddToGroupModal
+        open={addGameToGroupTarget != null}
+        game={addGameToGroupTarget}
+        groups={groups}
+        onClose={() => setAddGameToGroupTarget(null)}
+        onPick={(group) => {
+          if (addGameToGroupTarget) void handleAddToGroup(addGameToGroupTarget, group);
+        }}
+        onCreateGroup={handleCreateGroup}
+      />
 
       <GroupAddModal
         open={addToGroupTarget != null}
@@ -848,8 +1383,8 @@ function App() {
           showToast("Settings saved");
           invoke("fetch_covers", { ids: null }).catch(() => undefined);
         }}
-        onPreviewAppearance={(theme, cardScale) => {
-          applyAppearance(theme, cardScale);
+        onPreviewAppearance={(prefs: AppearancePrefs) => {
+          applyAppearance(prefs);
         }}
       />
 

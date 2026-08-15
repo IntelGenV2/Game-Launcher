@@ -586,6 +586,12 @@ impl Database {
                     }
                 }
                 "library_order" => settings.library_order = Some(v),
+                "show_titles" => settings.show_titles = Some(v == "1" || v == "true"),
+                "show_store_labels" => settings.show_store_labels = Some(v == "1" || v == "true"),
+                "grid_density" => settings.grid_density = Some(v),
+                "cover_corners" => settings.cover_corners = Some(v),
+                "cover_shape" => settings.cover_shape = Some(v),
+                "reduce_motion" => settings.reduce_motion = Some(v == "1" || v == "true"),
                 _ => {}
             }
         }
@@ -631,6 +637,41 @@ impl Database {
                 "INSERT INTO settings (key, value) VALUES ('library_order', ?1)
                  ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 params![order],
+            )?;
+        }
+        self.upsert_bool_setting("show_titles", settings.show_titles)?;
+        self.upsert_bool_setting("show_store_labels", settings.show_store_labels)?;
+        self.upsert_bool_setting("reduce_motion", settings.reduce_motion)?;
+        if let Some(v) = &settings.grid_density {
+            self.conn.execute(
+                "INSERT INTO settings (key, value) VALUES ('grid_density', ?1)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![v],
+            )?;
+        }
+        if let Some(v) = &settings.cover_corners {
+            self.conn.execute(
+                "INSERT INTO settings (key, value) VALUES ('cover_corners', ?1)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![v],
+            )?;
+        }
+        if let Some(v) = &settings.cover_shape {
+            self.conn.execute(
+                "INSERT INTO settings (key, value) VALUES ('cover_shape', ?1)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![v],
+            )?;
+        }
+        Ok(())
+    }
+
+    fn upsert_bool_setting(&self, key: &str, value: Option<bool>) -> Result<()> {
+        if let Some(v) = value {
+            self.conn.execute(
+                "INSERT INTO settings (key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![key, if v { "1" } else { "0" }],
             )?;
         }
         Ok(())

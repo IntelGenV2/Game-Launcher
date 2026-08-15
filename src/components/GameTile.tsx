@@ -17,8 +17,13 @@ interface Props {
   onToggleFavorite: (game: Game) => void;
   onHide: (game: Game) => void;
   onOpenFolder: (game: Game) => void;
-  onAddToGroup?: (game: Game, group: GameGroup) => void;
+  onAddToGroup?: (game: Game) => void;
+  onCreateGroup?: () => void;
   onRemoveFromGroup?: () => void;
+  focusActive?: boolean;
+  selectMode?: boolean;
+  selected?: boolean;
+  onToggleSelect?: (game: Game) => void;
 }
 
 export function GameTile({
@@ -38,7 +43,12 @@ export function GameTile({
   onHide,
   onOpenFolder,
   onAddToGroup,
+  onCreateGroup,
   onRemoveFromGroup,
+  focusActive = false,
+  selectMode = false,
+  selected = false,
+  onToggleSelect,
 }: Props) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [imgFailed, setImgFailed] = useState(false);
@@ -84,115 +94,71 @@ export function GameTile({
     <div
       className={`tile${inGroup ? " tile-in-group" : ""}${dropActive ? " drop-target" : ""}${
         dragActive ? " tile-dragging" : ""
-      }${expandIndex != null ? " tile-expand-out" : ""}`}
+      }${expandIndex != null ? " tile-expand-out" : ""}${focusActive ? " tile-focused" : ""}${
+        selected ? " tile-selected" : ""
+      }${selectMode ? " tile-select-mode" : ""}${menuOpen ? " menu-open" : ""}`}
       style={style}
       role="button"
       tabIndex={0}
+      data-focus-key={`game:${game.id}`}
       data-drop-game={inGroup ? undefined : game.id}
+      aria-selected={selectMode ? selected : undefined}
       onPointerDown={(e) => {
+        if (selectMode) return;
         if (e.button !== 0) return;
         if ((e.target as HTMLElement).closest("button, .context-menu")) return;
         onPointerDragStart?.(e, game);
       }}
       onClick={() => {
         if (suppressClick.current) return;
+        if (selectMode) {
+          onToggleSelect?.(game);
+          return;
+        }
         onOpen(game);
       }}
       onKeyDown={(e) => {
-        if (e.key === "Enter") {
+        if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
-          onOpen(game);
+          if (selectMode) onToggleSelect?.(game);
+          else onOpen(game);
         }
       }}
     >
       <div className="cover">
+        {selectMode && (
+          <span className={`select-check${selected ? " on" : ""}`} aria-hidden>
+            {selected ? "✓" : ""}
+          </span>
+        )}
         <div className="badge-row">
-          <button
-            type="button"
-            className={`star-btn${game.favorite ? " active" : ""}`}
-            title={game.favorite ? "Unfavorite" : "Favorite"}
-            onClick={(e) => {
-              e.stopPropagation();
-              onToggleFavorite(game);
-            }}
-          >
-            ★
-          </button>
-          <button
-            type="button"
-            className="menu-btn"
-            title="More"
-            onClick={(e) => {
-              e.stopPropagation();
-              setMenuOpen((v) => !v);
-            }}
-          >
-            ⋯
-          </button>
-        </div>
-
-        {menuOpen && (
-          <div className="context-menu" ref={menuRef} onClick={(e) => e.stopPropagation()}>
-            <button
-              type="button"
-              onClick={() => {
-                onToggleFavorite(game);
-                setMenuOpen(false);
-              }}
-            >
-              {game.favorite ? "Remove favorite" : "Add favorite"}
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                onOpenFolder(game);
-                setMenuOpen(false);
-              }}
-              disabled={!game.installPath}
-            >
-              Open install folder
-            </button>
-            {onRemoveFromGroup && (
+          {!selectMode && (
+            <>
               <button
                 type="button"
-                onClick={() => {
-                  onRemoveFromGroup();
-                  setMenuOpen(false);
+                className={`star-btn${game.favorite ? " active" : ""}`}
+                title={game.favorite ? "Unfavorite" : "Favorite"}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onToggleFavorite(game);
                 }}
               >
-                Remove from group
+                ★
               </button>
-            )}
-            {!inGroup && onAddToGroup && groups.length === 0 && (
-              <button type="button" disabled>
-                No groups yet — use Create group
+              <button
+                type="button"
+                className="menu-btn"
+                title="More"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setMenuOpen((v) => !v);
+                }}
+              >
+                ⋯
               </button>
-            )}
-            {!inGroup &&
-              onAddToGroup &&
-              groups.map((g) => (
-                <button
-                  key={g.id}
-                  type="button"
-                  onClick={() => {
-                    onAddToGroup(game, g);
-                    setMenuOpen(false);
-                  }}
-                >
-                  Add to “{g.name}”
-                </button>
-              ))}
-            <button
-              type="button"
-              onClick={() => {
-                onHide(game);
-                setMenuOpen(false);
-              }}
-            >
-              {game.hidden ? "Unhide from library" : "Hide from library"}
-            </button>
-          </div>
-        )}
+            </>
+          )}
+        </div>
 
         {src && !imgFailed ? (
           <img src={src} alt="" loading="lazy" onError={() => setImgFailed(true)} draggable={false} />
@@ -203,23 +169,92 @@ export function GameTile({
         {game.missing && <span className="missing-badge">Missing</span>}
         {inGroup && <span className="group-badge">{inGroup.name}</span>}
 
-        <div className="cover-overlay">
+        {!selectMode && (
+          <div className="cover-overlay">
+            <button
+              type="button"
+              className="play-btn"
+              disabled={game.missing}
+              aria-label={`Play ${game.name}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                onLaunch(game);
+              }}
+            >
+              ▶
+            </button>
+            <span className="meta-line">{formatPlaytime(game.playtimeMinutes)}</span>
+            <span className="meta-line">Last: {formatLastPlayed(game.lastPlayedAt)}</span>
+          </div>
+        )}
+      </div>
+
+      {!selectMode && menuOpen && (
+        <div className="context-menu" ref={menuRef} onClick={(e) => e.stopPropagation()}>
           <button
             type="button"
-            className="play-btn"
-            disabled={game.missing}
-            aria-label={`Play ${game.name}`}
-            onClick={(e) => {
-              e.stopPropagation();
-              onLaunch(game);
+            onClick={() => {
+              onToggleFavorite(game);
+              setMenuOpen(false);
             }}
           >
-            ▶
+            {game.favorite ? "Remove favorite" : "Add favorite"}
           </button>
-          <span className="meta-line">{formatPlaytime(game.playtimeMinutes)}</span>
-          <span className="meta-line">Last: {formatLastPlayed(game.lastPlayedAt)}</span>
+          <button
+            type="button"
+            onClick={() => {
+              onOpenFolder(game);
+              setMenuOpen(false);
+            }}
+            disabled={!game.installPath}
+          >
+            Open install folder
+          </button>
+          {onRemoveFromGroup && (
+            <button
+              type="button"
+              onClick={() => {
+                onRemoveFromGroup();
+                setMenuOpen(false);
+              }}
+            >
+              Remove from group
+            </button>
+          )}
+          {!inGroup && onAddToGroup && groups.length > 0 && (
+            <button
+              type="button"
+              onClick={() => {
+                onAddToGroup(game);
+                setMenuOpen(false);
+              }}
+            >
+              Add to group…
+            </button>
+          )}
+          {!inGroup && groups.length === 0 && onCreateGroup && (
+            <button
+              type="button"
+              onClick={() => {
+                onCreateGroup();
+                setMenuOpen(false);
+              }}
+            >
+              Create group
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => {
+              onHide(game);
+              setMenuOpen(false);
+            }}
+          >
+            {game.hidden ? "Unhide from library" : "Hide from library"}
+          </button>
         </div>
-      </div>
+      )}
+
       <div className="tile-title">{game.name}</div>
       <div className="tile-store">{STORE_LABELS[game.store as Store] ?? game.store}</div>
     </div>

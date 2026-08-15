@@ -9,9 +9,19 @@ export type Store =
   | "ubisoft"
   | "ea"
   | "roblox"
+  | "wargaming"
+  | "riot"
+  | "rockstar"
+  | "amazon"
+  | "itch"
+  | "humble"
   | "manual";
 
 export type ThemeId = "emerald" | "amber" | "cyan" | "slate" | "crimson";
+
+export type GridDensity = "cozy" | "normal" | "compact";
+export type CoverCorners = "soft" | "round" | "sharp";
+export type CoverShape = "portrait" | "square";
 
 export type LibraryFilter =
   | "all"
@@ -24,6 +34,12 @@ export type LibraryFilter =
   | "ea"
   | "battlenet"
   | "ubisoft"
+  | "wargaming"
+  | "riot"
+  | "rockstar"
+  | "amazon"
+  | "itch"
+  | "humble"
   | "other";
 
 export interface Game {
@@ -58,6 +74,12 @@ export interface AppSettings {
   theme: string | null;
   cardScale: number | null;
   libraryOrder: string | null;
+  showTitles: boolean | null;
+  showStoreLabels: boolean | null;
+  gridDensity: string | null;
+  coverCorners: string | null;
+  coverShape: string | null;
+  reduceMotion: boolean | null;
 }
 
 export interface LibraryStats {
@@ -108,6 +130,35 @@ export const THEME_OPTIONS: { id: ThemeId; label: string }[] = [
   { id: "crimson", label: "Crimson" },
 ];
 
+export const DENSITY_OPTIONS: { id: GridDensity; label: string }[] = [
+  { id: "cozy", label: "Cozy" },
+  { id: "normal", label: "Normal" },
+  { id: "compact", label: "Compact" },
+];
+
+export const CORNER_OPTIONS: { id: CoverCorners; label: string }[] = [
+  { id: "soft", label: "Soft" },
+  { id: "round", label: "Round" },
+  { id: "sharp", label: "Sharp" },
+];
+
+export const SHAPE_OPTIONS: { id: CoverShape; label: string }[] = [
+  { id: "portrait", label: "Portrait" },
+  { id: "square", label: "Square" },
+];
+
+export function isGridDensity(v: string | null | undefined): v is GridDensity {
+  return v === "cozy" || v === "normal" || v === "compact";
+}
+
+export function isCoverCorners(v: string | null | undefined): v is CoverCorners {
+  return v === "soft" || v === "round" || v === "sharp";
+}
+
+export function isCoverShape(v: string | null | undefined): v is CoverShape {
+  return v === "portrait" || v === "square";
+}
+
 export const STORE_LABELS: Record<Store, string> = {
   steam: "Steam",
   epic: "Epic",
@@ -117,6 +168,12 @@ export const STORE_LABELS: Record<Store, string> = {
   ubisoft: "Ubisoft",
   ea: "EA App",
   roblox: "Roblox",
+  wargaming: "Wargaming",
+  riot: "Riot",
+  rockstar: "Rockstar",
+  amazon: "Amazon",
+  itch: "itch.io",
+  humble: "Humble",
   manual: "Manual",
 };
 
@@ -131,6 +188,12 @@ export const FILTER_OPTIONS: { id: LibraryFilter; label: string }[] = [
   { id: "ea", label: "EA App" },
   { id: "battlenet", label: "Battle.net" },
   { id: "ubisoft", label: "Ubisoft" },
+  { id: "wargaming", label: "Wargaming" },
+  { id: "riot", label: "Riot" },
+  { id: "rockstar", label: "Rockstar" },
+  { id: "amazon", label: "Amazon" },
+  { id: "itch", label: "itch.io" },
+  { id: "humble", label: "Humble" },
   { id: "other", label: "Other" },
 ];
 
@@ -228,9 +291,71 @@ export function cardMinPx(scale: number): number {
   return Math.round(CARD_MIN_BASE * s);
 }
 
-export function applyAppearance(theme: ThemeId, cardScale: number) {
+export interface AppearancePrefs {
+  theme: ThemeId;
+  cardScale: number;
+  showTitles?: boolean;
+  showStoreLabels?: boolean;
+  gridDensity?: GridDensity;
+  coverCorners?: CoverCorners;
+  coverShape?: CoverShape;
+  reduceMotion?: boolean;
+}
+
+function densityGap(d: GridDensity): string {
+  if (d === "cozy") return "1.45rem";
+  if (d === "compact") return "0.7rem";
+  return "1.1rem";
+}
+
+function cornerRadius(c: CoverCorners): string {
+  if (c === "round") return "22px";
+  if (c === "sharp") return "4px";
+  return "14px";
+}
+
+function shapeRatio(s: CoverShape): string {
+  return s === "square" ? "1 / 1" : "2 / 3";
+}
+
+export function applyAppearance(prefs: AppearancePrefs | ThemeId, cardScaleArg?: number) {
+  // Back-compat: older call sites used applyAppearance(theme, cardScale)
+  const prefsObj: AppearancePrefs =
+    typeof prefs === "string"
+      ? { theme: prefs, cardScale: cardScaleArg ?? 1 }
+      : prefs;
+
+  const theme = prefsObj.theme;
+  const cardScale = prefsObj.cardScale;
+  const showTitles = prefsObj.showTitles !== false;
+  const showStoreLabels = prefsObj.showStoreLabels !== false;
+  const density = prefsObj.gridDensity ?? "normal";
+  const corners = prefsObj.coverCorners ?? "soft";
+  const shape = prefsObj.coverShape ?? "portrait";
+  const reduceMotion = prefsObj.reduceMotion === true;
+
   document.documentElement.setAttribute("data-theme", theme);
   document.documentElement.style.setProperty("--card-min", `${cardMinPx(cardScale)}px`);
+  document.documentElement.style.setProperty("--grid-gap", densityGap(density));
+  document.documentElement.style.setProperty("--cover-radius", cornerRadius(corners));
+  document.documentElement.style.setProperty("--cover-ratio", shapeRatio(shape));
+
+  document.body.classList.toggle("hide-titles", !showTitles);
+  document.body.classList.toggle("hide-store-labels", !showStoreLabels);
+  document.body.classList.toggle("reduce-motion", reduceMotion);
+}
+
+export function appearanceFromSettings(s: AppSettings): AppearancePrefs {
+  return {
+    theme: isThemeId(s.theme) ? s.theme : "emerald",
+    cardScale: typeof s.cardScale === "number" && s.cardScale > 0 ? s.cardScale : 1,
+    showTitles: s.showTitles !== false,
+    showStoreLabels: s.showStoreLabels !== false,
+    gridDensity: isGridDensity(s.gridDensity) ? s.gridDensity : "normal",
+    coverCorners: isCoverCorners(s.coverCorners) ? s.coverCorners : "soft",
+    coverShape: isCoverShape(s.coverShape) ? s.coverShape : "portrait",
+    reduceMotion: s.reduceMotion === true,
+  };
 }
 
 export function formatPlaytime(minutes: number): string {
