@@ -26,6 +26,8 @@ export type CoverShape = "portrait" | "square";
 export type LibraryFilter =
   | "all"
   | "favorites"
+  | "never"
+  | "missing"
   | "hidden"
   | "steam"
   | "epic"
@@ -41,6 +43,8 @@ export type LibraryFilter =
   | "itch"
   | "humble"
   | "other";
+
+export type MainView = "library" | "stats";
 
 export interface Game {
   id: string;
@@ -58,6 +62,38 @@ export interface Game {
   dateAdded: string;
   steamAppId: string | null;
   genre: string | null;
+  tags?: string[];
+  notes: string | null;
+  developer: string | null;
+  publisher: string | null;
+  releaseYear: number | null;
+  description: string | null;
+  genres?: string[];
+  logoPath: string | null;
+  launchArgs: string | null;
+  workingDir: string | null;
+  runAsAdmin: boolean;
+  saveFolder: string | null;
+}
+
+/** Drop Wikipedia dumps and notes so the library list stays small. */
+export function asLibraryGame(game: Game): Game {
+  return {
+    ...game,
+    notes: null,
+    description: null,
+    launchArgs: null,
+    workingDir: null,
+    saveFolder: null,
+    logoPath: null,
+  };
+}
+
+export interface CoverChoiceGroup {
+  gameId: string;
+  name: string;
+  currentPath: string | null;
+  paths: string[];
 }
 
 export interface GameGroup {
@@ -80,12 +116,54 @@ export interface AppSettings {
   coverCorners: string | null;
   coverShape: string | null;
   reduceMotion: boolean | null;
+  startWithWindows: boolean | null;
+  closeToTray: boolean | null;
+  startInBackground: boolean | null;
 }
 
 export interface LibraryStats {
   total: number;
   favorites: number;
   missing: number;
+}
+
+export interface TopPlayedGame {
+  gameId: string;
+  name: string;
+  minutes: number;
+}
+
+export interface YearInReview {
+  year: number;
+  totalMinutes: number;
+  monthly: DailyPlaytime[];
+  topGames: TopPlayedGame[];
+}
+
+export interface LibraryOverview {
+  hoursThisWeek: number;
+  minutesThisWeek: number;
+  mostPlayed: TopPlayedGame | null;
+  streakDays: number;
+  yearInReview: YearInReview;
+  totalPlaytimeMinutes: number;
+  gamesPlayed: number;
+}
+
+export interface ScanStoreProgress {
+  store: string;
+  status: string;
+  count: number;
+  message: string | null;
+}
+
+export interface DuplicateGroup {
+  key: string;
+  games: Game[];
+}
+
+export function neverPlayed(game: Game): boolean {
+  return (!game.playtimeMinutes || game.playtimeMinutes <= 0) && !game.lastPlayedAt;
 }
 
 export interface PlaySession {
@@ -177,10 +255,14 @@ export const STORE_LABELS: Record<Store, string> = {
   manual: "Manual",
 };
 
-export const FILTER_OPTIONS: { id: LibraryFilter; label: string }[] = [
+export const QUICK_FILTERS: { id: LibraryFilter; label: string }[] = [
   { id: "all", label: "All" },
   { id: "favorites", label: "Favorites" },
-  { id: "hidden", label: "Hidden" },
+  { id: "never", label: "Never" },
+  { id: "missing", label: "Missing" },
+];
+
+export const STORE_FILTER_OPTIONS: { id: LibraryFilter; label: string }[] = [
   { id: "steam", label: "Steam" },
   { id: "epic", label: "Epic" },
   { id: "gog", label: "GOG" },
@@ -195,6 +277,7 @@ export const FILTER_OPTIONS: { id: LibraryFilter; label: string }[] = [
   { id: "itch", label: "itch.io" },
   { id: "humble", label: "Humble" },
   { id: "other", label: "Other" },
+  { id: "hidden", label: "Hidden" },
 ];
 
 export const SORT_OPTIONS: { id: SortMode; label: string }[] = [
@@ -207,6 +290,8 @@ export const SORT_OPTIONS: { id: SortMode; label: string }[] = [
   { id: "favorites", label: "Favorites first" },
   { id: "missing", label: "Missing first" },
 ];
+
+export const FILTER_OPTIONS = [...QUICK_FILTERS, ...STORE_FILTER_OPTIONS];
 
 export function isSortMode(v: string | null | undefined): v is SortMode {
   return (
@@ -380,28 +465,82 @@ export function formatLastPlayed(iso: string | null): string {
   return d.toLocaleDateString();
 }
 
-/** Resolve a displayable cover URL. Local cached art (data URL) wins. */
-export function coverSrc(game: Game, dataUrl?: string | null): string | null {
-  if (dataUrl) return dataUrl;
-  if (game.coverPath) {
-    return null;
-  }
-  if (game.steamAppId) {
-    return `https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/${game.steamAppId}/library_600x900.jpg`;
-  }
-  if (game.coverUrl && !isLikelyBrokenCoverUrl(game.coverUrl)) {
-    return game.coverUrl;
+function steamIdOf(game: Game): string | null {
+  if (game.steamAppId) return game.steamAppId;
+  if (game.store === "steam" || game.id.startsWith("steam:")) {
+    if (/^\d+$/.test(game.launchTarget)) return game.launchTarget;
+    const m = /^steam:(\d+)/i.exec(game.id);
+    if (m) return m[1];
   }
   return null;
+}
+
+function steamCoverUrls(appId: string): string[] {
+  return [
+    `https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/${appId}/library_600x900.jpg`,
+  ];
+}
+
+function fileBaseName(filePath: string): string | null {
+  const name = filePath.split(/[/\\]/).pop()?.trim();
+  return name ? name : null;
+}
+
+/** Local covers are served by the `cover` URI scheme (WebView2 often fails on asset://). */
+export function localCoverUrl(filePath: string, bustCache = false): string | null {
+  const name = fileBaseName(filePath);
+  if (!name) return null;
+  const q = bustCache ? `?t=${Date.now()}` : "";
+  return `http://cover.localhost/${encodeURIComponent(name)}${q}`;
+}
+
+function localCoverUrls(filePath: string): string[] {
+  const url = localCoverUrl(filePath);
+  return url ? [url] : [];
+}
+
+/** Ordered cover URLs: local file via cover protocol, then Steam CDN, then stored URL. */
+export function coverCandidates(
+  game: Game,
+  override?: string | null,
+  opts?: { allowRemote?: boolean },
+): string[] {
+  const out: string[] = [];
+  const add = (url?: string | null) => {
+    if (!url || url.startsWith("data:")) return;
+    if (!out.includes(url)) out.push(url);
+  };
+  add(override ?? null);
+  if (game.coverPath) localCoverUrls(game.coverPath).forEach(add);
+  if (opts?.allowRemote !== false) {
+    const steamId = steamIdOf(game);
+    if (steamId) steamCoverUrls(steamId).forEach(add);
+    if (game.coverUrl && !isLikelyBrokenCoverUrl(game.coverUrl)) add(game.coverUrl);
+  }
+  return out;
+}
+
+/** Resolve a displayable cover URL. Local files use the asset protocol (not base64). */
+export function coverSrc(game: Game, dataUrl?: string | null): string | null {
+  return coverCandidates(game, dataUrl)[0] ?? null;
 }
 
 function isLikelyBrokenCoverUrl(url: string): boolean {
   const u = url.toLowerCase();
   return (
-    u.includes("header.jpg") ||
     u.includes("library_hero") ||
     u.includes("page_bg") ||
-    u.includes("capsule_616")
+    u.includes("page_background") ||
+    u.includes("header.jpg") ||
+    u.includes("header_2x") ||
+    u.includes("screenshot") ||
+    u.includes("gameplay") ||
+    u.includes("capsule_616") ||
+    u.includes("capsule_467") ||
+    u.includes("main_capsule") ||
+    u.includes("banner") ||
+    u.includes("1920x1080") ||
+    u.includes("2560x1440")
   );
 }
 

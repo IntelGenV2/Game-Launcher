@@ -1,5 +1,12 @@
-import { Game, GameGroup, STORE_LABELS, Store, coverSrc, formatLastPlayed, formatPlaytime } from "../types";
+import { Game, GameGroup, STORE_LABELS, Store, formatLastPlayed, formatPlaytime } from "../types";
 import { useEffect, useRef, useState } from "react";
+import { CoverImg } from "./CoverImg";
+import {
+  TileContextMenu,
+  type MenuAnchor,
+  anchorFromElement,
+  anchorFromPoint,
+} from "./TileContextMenu";
 
 interface Props {
   game: Game;
@@ -17,6 +24,7 @@ interface Props {
   onToggleFavorite: (game: Game) => void;
   onHide: (game: Game) => void;
   onOpenFolder: (game: Game) => void;
+  onOpenSaveFolder?: (game: Game) => void;
   onAddToGroup?: (game: Game) => void;
   onCreateGroup?: () => void;
   onRemoveFromGroup?: () => void;
@@ -42,6 +50,7 @@ export function GameTile({
   onToggleFavorite,
   onHide,
   onOpenFolder,
+  onOpenSaveFolder,
   onAddToGroup,
   onCreateGroup,
   onRemoveFromGroup,
@@ -51,22 +60,27 @@ export function GameTile({
   onToggleSelect,
 }: Props) {
   const [menuOpen, setMenuOpen] = useState(false);
-  const [imgFailed, setImgFailed] = useState(false);
+  const [menuAnchor, setMenuAnchor] = useState<MenuAnchor | null>(null);
   const suppressClick = useRef(false);
-  const menuRef = useRef<HTMLDivElement>(null);
-  const src = coverSrc(game, coverDataUrl);
+  const menuBtnRef = useRef<HTMLButtonElement>(null);
 
-  useEffect(() => {
-    setImgFailed(false);
-  }, [src, game.id, coverDataUrl]);
+  function openMenu(anchor: MenuAnchor | null) {
+    if (!anchor) return;
+    setMenuAnchor(anchor);
+    setMenuOpen(true);
+  }
+
+  function closeMenu() {
+    setMenuOpen(false);
+  }
 
   useEffect(() => {
     if (!menuOpen) return;
-    const onDoc = (e: MouseEvent) => {
-      if (!menuRef.current?.contains(e.target as Node)) setMenuOpen(false);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMenuOpen(false);
     };
-    document.addEventListener("mousedown", onDoc);
-    return () => document.removeEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
   }, [menuOpen]);
 
   useEffect(() => {
@@ -79,7 +93,6 @@ export function GameTile({
     }
   }, [dragActive]);
 
-  const initial = game.name.trim().charAt(0).toUpperCase() || "?";
   const style: React.CSSProperties = {
     animationDelay:
       expandIndex != null
@@ -124,6 +137,11 @@ export function GameTile({
           else onOpen(game);
         }
       }}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        if (selectMode) return;
+        openMenu(anchorFromPoint(e.clientX, e.clientY));
+      }}
     >
       <div className="cover">
         {selectMode && (
@@ -147,11 +165,13 @@ export function GameTile({
               </button>
               <button
                 type="button"
+                ref={menuBtnRef}
                 className="menu-btn"
                 title="More"
                 onClick={(e) => {
                   e.stopPropagation();
-                  setMenuOpen((v) => !v);
+                  if (menuOpen) closeMenu();
+                  else openMenu(anchorFromElement(menuBtnRef.current));
                 }}
               >
                 ⋯
@@ -160,11 +180,7 @@ export function GameTile({
           )}
         </div>
 
-        {src && !imgFailed ? (
-          <img src={src} alt="" loading="lazy" onError={() => setImgFailed(true)} draggable={false} />
-        ) : (
-          <div className="cover-fallback">{initial}</div>
-        )}
+        <CoverImg game={game} override={coverDataUrl} draggable={false} allowRemote={false} />
 
         {game.missing && <span className="missing-badge">Missing</span>}
         {inGroup && <span className="group-badge">{inGroup.name}</span>}
@@ -189,22 +205,43 @@ export function GameTile({
         )}
       </div>
 
-      {!selectMode && menuOpen && (
-        <div className="context-menu" ref={menuRef} onClick={(e) => e.stopPropagation()}>
+      {!selectMode && (
+        <TileContextMenu open={menuOpen} anchor={menuAnchor} onClose={closeMenu}>
           <button
             type="button"
             onClick={() => {
-              onToggleFavorite(game);
-              setMenuOpen(false);
+              onLaunch(game);
+              closeMenu();
             }}
+            disabled={game.missing}
           >
-            {game.favorite ? "Remove favorite" : "Add favorite"}
+            Play
           </button>
           <button
             type="button"
             onClick={() => {
+              onToggleFavorite(game);
+              closeMenu();
+            }}
+          >
+            {game.favorite ? "Remove favorite" : "Add favorite"}
+          </button>
+          {onOpenSaveFolder && game.saveFolder && (
+            <button
+              type="button"
+              onClick={() => {
+                onOpenSaveFolder(game);
+                closeMenu();
+              }}
+            >
+              Open save folder
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => {
               onOpenFolder(game);
-              setMenuOpen(false);
+              closeMenu();
             }}
             disabled={!game.installPath}
           >
@@ -215,7 +252,7 @@ export function GameTile({
               type="button"
               onClick={() => {
                 onRemoveFromGroup();
-                setMenuOpen(false);
+                closeMenu();
               }}
             >
               Remove from group
@@ -226,7 +263,7 @@ export function GameTile({
               type="button"
               onClick={() => {
                 onAddToGroup(game);
-                setMenuOpen(false);
+                closeMenu();
               }}
             >
               Add to group…
@@ -237,7 +274,7 @@ export function GameTile({
               type="button"
               onClick={() => {
                 onCreateGroup();
-                setMenuOpen(false);
+                closeMenu();
               }}
             >
               Create group
@@ -247,12 +284,12 @@ export function GameTile({
             type="button"
             onClick={() => {
               onHide(game);
-              setMenuOpen(false);
+              closeMenu();
             }}
           >
             {game.hidden ? "Unhide from library" : "Hide from library"}
           </button>
-        </div>
+        </TileContextMenu>
       )}
 
       <div className="tile-title">{game.name}</div>

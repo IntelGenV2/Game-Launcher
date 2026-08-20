@@ -1,17 +1,82 @@
 use crate::models::{
-    AppSettings, DailyPlaytime, DiscoveredGame, Game, GameGroup, GameStats, PlaySession, Store,
+    AppSettings, DailyPlaytime, DiscoveredGame, DuplicateGroup, Game, GameGroup, GameStats,
+    LibraryOverview, PlaySession, Store, TopPlayedGame, YearInReview,
 };
 use anyhow::{Context, Result};
-use chrono::{Duration, Utc};
+use chrono::{Datelike, Duration, Utc};
 use rusqlite::{params, Connection};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 pub const APP_DATA_FOLDER: &str = "IntelLauncher";
 const LEGACY_APP_DATA_FOLDER: &str = "UnifiedGameLauncher";
+const MAX_SESSION_MINUTES: i64 = 12 * 60;
+
+fn clip_text(value: Option<String>, max_chars: usize) -> Option<String> {
+    let text = value?.trim().to_string();
+    if text.is_empty() {
+        return None;
+    }
+    if text.chars().count() <= max_chars {
+        return Some(text);
+    }
+    Some(text.chars().take(max_chars).collect::<String>() + "…")
+}
+
+fn session_duration_minutes(started: &str, ended: Option<&str>) -> i64 {
+    let Ok(start) = chrono::DateTime::parse_from_rfc3339(started) else {
+        return 0;
+    };
+    let Some(ended) = ended else {
+        return 0;
+    };
+    let Ok(end) = chrono::DateTime::parse_from_rfc3339(ended) else {
+        return 0;
+    };
+    (end.with_timezone(&Utc) - start.with_timezone(&Utc))
+        .num_minutes()
+        .max(0)
+        .min(MAX_SESSION_MINUTES)
+}
+
+const GAME_COLS: &str = "id, name, store, launch_target, install_path, cover_url, cover_path,
+    favorite, hidden, missing, playtime_minutes, last_played_at, date_added, steam_app_id, genre,
+    notes, developer, publisher, release_year, description, genres_json, hltb_main, hltb_extra,
+    hltb_completionist, logo_path, launch_args, working_dir, run_as_admin, config_path,
+    mod_manager_path, save_folder";
+
+/// Library grid payload: skip Wikipedia dumps, notes, and launch-only fields.
+const LIST_GAME_COLS: &str = "id, name, store, launch_target, install_path, cover_url, cover_path,
+    favorite, hidden, missing, playtime_minutes, last_played_at, date_added, steam_app_id, genre,
+    NULL as notes, developer, publisher, release_year, NULL as description, genres_json,
+    NULL as hltb_main, NULL as hltb_extra, NULL as hltb_completionist, NULL as logo_path,
+    NULL as launch_args, NULL as working_dir, run_as_admin, NULL as config_path,
+    NULL as mod_manager_path, NULL as save_folder";
 
 pub struct Database {
     conn: Connection,
+}
+
+fn parse_genres(genres_json: Option<String>, genre: Option<String>) -> Vec<String> {
+    if let Some(raw) = genres_json {
+        if let Ok(list) = serde_json::from_str::<Vec<String>>(&raw) {
+            return list
+                .into_iter()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+        }
+    }
+    genre
+        .unwrap_or_default()
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+fn normalize_dup_name(name: &str) -> String {
+    crate::playnite::normalize_name(name)
 }
 
 impl Database {
@@ -23,6 +88,7 @@ impl Database {
         let db = Self { conn };
         db.migrate()?;
         db.rewrite_legacy_cover_paths()?;
+        db.compact_long_text()?;
         Ok(db)
     }
 
@@ -36,6 +102,34 @@ impl Database {
                 format!("%{LEGACY_APP_DATA_FOLDER}%")
             ],
         );
+        Ok(())
+    }
+
+    fn compact_long_text(&self) -> Result<()> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, description, notes FROM games
+             WHERE length(IFNULL(description, '')) > 800
+                OR length(IFNULL(notes, '')) > 4000",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })?;
+        let mut updates = Vec::new();
+        for row in rows {
+            let (id, description, notes) = row?;
+            updates.push((id, clip_text(description, 800), clip_text(notes, 4000)));
+        }
+        drop(stmt);
+        for (id, description, notes) in updates {
+            self.conn.execute(
+                "UPDATE games SET description = ?1, notes = ?2 WHERE id = ?3",
+                params![description, notes, id],
+            )?;
+        }
         Ok(())
     }
 
@@ -58,7 +152,24 @@ impl Database {
                 date_added TEXT NOT NULL,
                 steam_app_id TEXT,
                 path_override INTEGER NOT NULL DEFAULT 0,
-                genre TEXT
+                genre TEXT,
+                notes TEXT,
+                developer TEXT,
+                publisher TEXT,
+                release_year INTEGER,
+                description TEXT,
+                genres_json TEXT,
+                hltb_main INTEGER,
+                hltb_extra INTEGER,
+                hltb_completionist INTEGER,
+                logo_path TEXT,
+                launch_args TEXT,
+                working_dir TEXT,
+                run_as_admin INTEGER NOT NULL DEFAULT 0,
+                config_path TEXT,
+                mod_manager_path TEXT,
+                save_folder TEXT,
+                import_playtime INTEGER NOT NULL DEFAULT 1
             );
 
             CREATE TABLE IF NOT EXISTS settings (
@@ -70,16 +181,7 @@ impl Database {
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 game_id TEXT NOT NULL,
                 started_at TEXT NOT NULL,
-                ended_at TEXT,
-                avg_fps REAL
-            );
-
-            CREATE TABLE IF NOT EXISTS fps_samples (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                game_id TEXT NOT NULL,
-                recorded_at TEXT NOT NULL,
-                fps REAL NOT NULL,
-                note TEXT
+                ended_at TEXT
             );
 
             CREATE TABLE IF NOT EXISTS game_groups (
@@ -95,12 +197,16 @@ impl Database {
                 sort_order INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (group_id, game_id)
             );
+
+            CREATE TABLE IF NOT EXISTS game_tags (
+                game_id TEXT NOT NULL,
+                tag TEXT NOT NULL,
+                PRIMARY KEY (game_id, tag)
+            );
             "#,
         )?;
         // Migrations for existing DBs
-        let _ = self
-            .conn
-            .execute("ALTER TABLE sessions ADD COLUMN avg_fps REAL", []);
+        let _ = self.conn.execute("DROP TABLE IF EXISTS fps_samples", []);
         let _ = self.conn.execute(
             "ALTER TABLE games ADD COLUMN path_override INTEGER NOT NULL DEFAULT 0",
             [],
@@ -108,6 +214,36 @@ impl Database {
         let _ = self
             .conn
             .execute("ALTER TABLE games ADD COLUMN genre TEXT", []);
+        for col in [
+            "ALTER TABLE games ADD COLUMN notes TEXT",
+            "ALTER TABLE games ADD COLUMN developer TEXT",
+            "ALTER TABLE games ADD COLUMN publisher TEXT",
+            "ALTER TABLE games ADD COLUMN release_year INTEGER",
+            "ALTER TABLE games ADD COLUMN description TEXT",
+            "ALTER TABLE games ADD COLUMN genres_json TEXT",
+            "ALTER TABLE games ADD COLUMN hltb_main INTEGER",
+            "ALTER TABLE games ADD COLUMN hltb_extra INTEGER",
+            "ALTER TABLE games ADD COLUMN hltb_completionist INTEGER",
+            "ALTER TABLE games ADD COLUMN logo_path TEXT",
+            "ALTER TABLE games ADD COLUMN launch_args TEXT",
+            "ALTER TABLE games ADD COLUMN working_dir TEXT",
+            "ALTER TABLE games ADD COLUMN run_as_admin INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE games ADD COLUMN config_path TEXT",
+            "ALTER TABLE games ADD COLUMN mod_manager_path TEXT",
+            "ALTER TABLE games ADD COLUMN save_folder TEXT",
+            "ALTER TABLE games ADD COLUMN import_playtime INTEGER NOT NULL DEFAULT 1",
+        ] {
+            let _ = self.conn.execute(col, []);
+        }
+        let _ = self.conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS game_tags (
+                game_id TEXT NOT NULL,
+                tag TEXT NOT NULL,
+                PRIMARY KEY (game_id, tag)
+            );
+            "#,
+        );
         let _ = self.conn.execute_batch(
             r#"
             CREATE TABLE IF NOT EXISTS game_groups (
@@ -128,6 +264,8 @@ impl Database {
     }
 
     fn map_game(row: &rusqlite::Row<'_>) -> rusqlite::Result<Game> {
+        let genre: Option<String> = row.get("genre")?;
+        let genres_json: Option<String> = row.get("genres_json")?;
         Ok(Game {
             id: row.get("id")?,
             name: row.get("name")?,
@@ -143,40 +281,62 @@ impl Database {
             last_played_at: row.get("last_played_at")?,
             date_added: row.get("date_added")?,
             steam_app_id: row.get("steam_app_id")?,
-            genre: row.get("genre")?,
+            genre: genre.clone(),
+            tags: Vec::new(),
+            notes: row.get("notes")?,
+            developer: row.get("developer")?,
+            publisher: row.get("publisher")?,
+            release_year: row.get("release_year")?,
+            description: row.get("description")?,
+            genres: parse_genres(genres_json, genre),
+            hltb_main: row.get("hltb_main")?,
+            hltb_extra: row.get("hltb_extra")?,
+            hltb_completionist: row.get("hltb_completionist")?,
+            logo_path: row.get("logo_path")?,
+            launch_args: row.get("launch_args")?,
+            working_dir: row.get("working_dir")?,
+            run_as_admin: row.get::<_, i64>("run_as_admin").unwrap_or(0) != 0,
+            config_path: row.get("config_path")?,
+            mod_manager_path: row.get("mod_manager_path")?,
+            save_folder: row.get("save_folder")?,
         })
     }
 
     pub fn list_games(&self, include_hidden: bool) -> Result<Vec<Game>> {
         let sql = if include_hidden {
-            "SELECT id, name, store, launch_target, install_path, cover_url, cover_path,
-                    favorite, hidden, missing, playtime_minutes, last_played_at, date_added,
-                    steam_app_id, genre
-             FROM games ORDER BY name COLLATE NOCASE"
+            format!("SELECT {LIST_GAME_COLS} FROM games ORDER BY name COLLATE NOCASE")
         } else {
-            "SELECT id, name, store, launch_target, install_path, cover_url, cover_path,
-                    favorite, hidden, missing, playtime_minutes, last_played_at, date_added,
-                    steam_app_id, genre
-             FROM games WHERE hidden = 0 ORDER BY name COLLATE NOCASE"
+            format!("SELECT {LIST_GAME_COLS} FROM games WHERE hidden = 0 ORDER BY name COLLATE NOCASE")
         };
-        let mut stmt = self.conn.prepare(sql)?;
+        let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map([], Self::map_game)?;
         let mut games = Vec::new();
         for g in rows {
             games.push(g?);
         }
+        self.attach_tags(&mut games)?;
+        for g in &mut games {
+            g.description = None;
+            g.notes = None;
+            g.hltb_main = None;
+            g.hltb_extra = None;
+            g.hltb_completionist = None;
+            g.config_path = None;
+            g.mod_manager_path = None;
+        }
         Ok(games)
     }
 
     pub fn get_game(&self, id: &str) -> Result<Option<Game>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, name, store, launch_target, install_path, cover_url, cover_path,
-                    favorite, hidden, missing, playtime_minutes, last_played_at, date_added,
-                    steam_app_id, genre
-             FROM games WHERE id = ?1",
-        )?;
+        let sql = format!("SELECT {GAME_COLS} FROM games WHERE id = ?1");
+        let mut stmt = self.conn.prepare(&sql)?;
         let mut rows = stmt.query_map(params![id], Self::map_game)?;
-        Ok(rows.next().transpose()?)
+        let mut game = rows.next().transpose()?;
+        if let Some(g) = game.as_mut() {
+            g.tags = self.tags_for(&g.id)?;
+            g.description = clip_text(g.description.take(), 800);
+        }
+        Ok(game)
     }
 
     pub fn upsert_discovered(&self, discovered: &[DiscoveredGame]) -> Result<()> {
@@ -194,7 +354,7 @@ impl Database {
 
         for g in discovered {
             let existing = tx.query_row(
-                "SELECT favorite, hidden, playtime_minutes, last_played_at, date_added, cover_url, cover_path, COALESCE(path_override, 0) FROM games WHERE id = ?1",
+                "SELECT favorite, hidden, playtime_minutes, last_played_at, date_added, cover_url, cover_path, COALESCE(path_override, 0), COALESCE(import_playtime, 1) FROM games WHERE id = ?1",
                 params![g.id],
                 |row| {
                     Ok((
@@ -206,6 +366,7 @@ impl Database {
                         row.get::<_, Option<String>>(5)?,
                         row.get::<_, Option<String>>(6)?,
                         row.get::<_, i64>(7)?,
+                        row.get::<_, i64>(8)?,
                     ))
                 },
             );
@@ -220,11 +381,14 @@ impl Database {
                     _cover_url,
                     _cover_path,
                     path_override,
+                    import_playtime,
                 )) => {
                     let mut playtime = playtime;
-                    if let Some(imported) = g.playtime_minutes {
-                        if imported > playtime {
-                            playtime = imported;
+                    if import_playtime != 0 {
+                        if let Some(imported) = g.playtime_minutes {
+                            if imported > playtime {
+                                playtime = imported;
+                            }
                         }
                     }
                     if path_override != 0 {
@@ -391,6 +555,31 @@ impl Database {
         Ok(())
     }
 
+    pub fn clear_cover_path(&self, id: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE games SET cover_path = NULL WHERE id = ?1",
+            params![id],
+        )?;
+        Ok(())
+    }
+
+    pub fn clear_all_covers(&self) -> Result<()> {
+        self.conn.execute(
+            "UPDATE games SET cover_path = NULL, cover_url = NULL, logo_path = NULL",
+            [],
+        )?;
+        Ok(())
+    }
+
+    pub fn clear_all_stats(&self) -> Result<()> {
+        self.conn.execute("DELETE FROM sessions", [])?;
+        self.conn.execute(
+            "UPDATE games SET playtime_minutes = 0, last_played_at = NULL, import_playtime = 0",
+            [],
+        )?;
+        Ok(())
+    }
+
     pub fn set_steam_app_id(&self, id: &str, steam_app_id: &str) -> Result<()> {
         self.conn.execute(
             "UPDATE games SET steam_app_id = COALESCE(steam_app_id, ?1) WHERE id = ?2",
@@ -448,11 +637,6 @@ impl Database {
     }
 
     pub fn remove_game(&self, id: &str) -> Result<()> {
-        self.conn
-            .execute("DELETE FROM sessions WHERE game_id = ?1", params![id])?;
-        let _ = self
-            .conn
-            .execute("DELETE FROM fps_samples WHERE game_id = ?1", params![id]);
         self.conn.execute(
             "DELETE FROM game_group_members WHERE game_id = ?1",
             params![id],
@@ -476,16 +660,29 @@ impl Database {
     }
 
     pub fn end_session_and_add_playtime(&self, id: &str, minutes: i64) -> Result<Game> {
+        let minutes = minutes.clamp(0, MAX_SESSION_MINUTES);
+        let started: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT started_at FROM sessions WHERE game_id = ?1 AND ended_at IS NULL ORDER BY id DESC LIMIT 1",
+                params![id],
+                |row| row.get(0),
+            )
+            .ok();
+        let ended_at = started
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
+            .map(|s| (s.with_timezone(&Utc) + Duration::minutes(minutes)).to_rfc3339())
+            .unwrap_or_else(|| Utc::now().to_rfc3339());
         let now = Utc::now().to_rfc3339();
         self.conn.execute(
             "UPDATE sessions SET ended_at = ?1 WHERE id = (
                 SELECT id FROM sessions WHERE game_id = ?2 AND ended_at IS NULL ORDER BY id DESC LIMIT 1
             )",
-            params![now, id],
+            params![ended_at, id],
         )?;
         self.conn.execute(
             "UPDATE games SET playtime_minutes = playtime_minutes + ?1, last_played_at = ?2 WHERE id = ?3",
-            params![minutes.max(0), now, id],
+            params![minutes, now, id],
         )?;
         self.get_game(id)?
             .ok_or_else(|| anyhow::anyhow!("game not found"))
@@ -502,21 +699,7 @@ impl Database {
         let sess_rows = sess_stmt.query_map(params![game_id], |row| {
             let started: String = row.get(2)?;
             let ended: Option<String> = row.get(3)?;
-            let duration = match &ended {
-                Some(e) => {
-                    let s = chrono::DateTime::parse_from_rfc3339(&started)
-                        .ok()
-                        .map(|d| d.with_timezone(&Utc));
-                    let e = chrono::DateTime::parse_from_rfc3339(e)
-                        .ok()
-                        .map(|d| d.with_timezone(&Utc));
-                    match (s, e) {
-                        (Some(s), Some(e)) => (e - s).num_minutes().max(0),
-                        _ => 0,
-                    }
-                }
-                None => 0,
-            };
+            let duration = session_duration_minutes(&started, ended.as_deref());
             Ok(PlaySession {
                 id: row.get(0)?,
                 game_id: row.get(1)?,
@@ -592,6 +775,11 @@ impl Database {
                 "cover_corners" => settings.cover_corners = Some(v),
                 "cover_shape" => settings.cover_shape = Some(v),
                 "reduce_motion" => settings.reduce_motion = Some(v == "1" || v == "true"),
+                "start_with_windows" => settings.start_with_windows = Some(v == "1" || v == "true"),
+                "close_to_tray" => settings.close_to_tray = Some(v == "1" || v == "true"),
+                "start_in_background" => {
+                    settings.start_in_background = Some(v == "1" || v == "true")
+                }
                 _ => {}
             }
         }
@@ -663,6 +851,9 @@ impl Database {
                 params![v],
             )?;
         }
+        self.upsert_bool_setting("start_with_windows", settings.start_with_windows)?;
+        self.upsert_bool_setting("close_to_tray", settings.close_to_tray)?;
+        self.upsert_bool_setting("start_in_background", settings.start_in_background)?;
         Ok(())
     }
 
@@ -822,6 +1013,519 @@ impl Database {
             .ok_or_else(|| anyhow::anyhow!("Group not found"))
     }
 
+    fn tags_for(&self, game_id: &str) -> Result<Vec<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT tag FROM game_tags WHERE game_id = ?1 ORDER BY tag COLLATE NOCASE")?;
+        let rows = stmt.query_map(params![game_id], |row| row.get::<_, String>(0))?;
+        let mut tags = Vec::new();
+        for r in rows {
+            tags.push(r?);
+        }
+        Ok(tags)
+    }
+
+    fn attach_tags(&self, games: &mut [Game]) -> Result<()> {
+        let mut stmt = self.conn.prepare("SELECT game_id, tag FROM game_tags")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut map: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        for row in rows {
+            let (id, tag) = row?;
+            map.entry(id).or_default().push(tag);
+        }
+        for g in games.iter_mut() {
+            if let Some(tags) = map.remove(&g.id) {
+                g.tags = tags;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn set_notes(&self, id: &str, notes: &str) -> Result<Game> {
+        self.conn.execute(
+            "UPDATE games SET notes = ?1 WHERE id = ?2",
+            params![notes, id],
+        )?;
+        self.get_game(id)?
+            .ok_or_else(|| anyhow::anyhow!("game not found"))
+    }
+
+    pub fn set_tags(&self, id: &str, tags: &[String]) -> Result<Game> {
+        if self.get_game(id)?.is_none() {
+            anyhow::bail!("game not found");
+        }
+        self.conn
+            .execute("DELETE FROM game_tags WHERE game_id = ?1", params![id])?;
+        let mut seen = std::collections::HashSet::new();
+        for tag in tags {
+            let t = tag.trim();
+            if t.is_empty() {
+                continue;
+            }
+            let key = t.to_lowercase();
+            if !seen.insert(key) {
+                continue;
+            }
+            self.conn.execute(
+                "INSERT OR IGNORE INTO game_tags (game_id, tag) VALUES (?1, ?2)",
+                params![id, t],
+            )?;
+        }
+        self.get_game(id)?
+            .ok_or_else(|| anyhow::anyhow!("game not found"))
+    }
+
+    pub fn set_launch_options(
+        &self,
+        id: &str,
+        launch_args: Option<&str>,
+        working_dir: Option<&str>,
+        run_as_admin: bool,
+        save_folder: Option<&str>,
+    ) -> Result<Game> {
+        self.conn.execute(
+            r#"UPDATE games SET
+                launch_args = ?1,
+                working_dir = ?2,
+                run_as_admin = ?3,
+                save_folder = ?4
+            WHERE id = ?5"#,
+            params![
+                launch_args,
+                working_dir,
+                run_as_admin as i64,
+                save_folder,
+                id
+            ],
+        )?;
+        self.get_game(id)?
+            .ok_or_else(|| anyhow::anyhow!("game not found"))
+    }
+
+    pub fn apply_metadata(
+        &self,
+        id: &str,
+        meta: &crate::metadata::GameMetadata,
+    ) -> Result<Game> {
+        let existing = self
+            .get_game(id)?
+            .ok_or_else(|| anyhow::anyhow!("game not found"))?;
+        let developer = meta.developer.clone().or(existing.developer);
+        let publisher = meta.publisher.clone().or(existing.publisher);
+        let release_year = meta.release_year.or(existing.release_year);
+        let description = clip_text(meta.description.clone().or(existing.description), 800);
+        let genres =         if meta.genres.is_empty() {
+            existing.genres.clone()
+        } else {
+            meta.genres.clone()
+        };
+        let genres_json = serde_json::to_string(&genres).unwrap_or_default();
+        let genre = if genres.is_empty() {
+            existing.genre.clone()
+        } else {
+            Some(genres.join(", "))
+        };
+        let steam_id = meta.steam_app_id.clone().or(existing.steam_app_id);
+
+        self.conn.execute(
+            r#"UPDATE games SET
+                developer = ?1,
+                publisher = ?2,
+                release_year = ?3,
+                description = ?4,
+                genres_json = ?5,
+                genre = ?6,
+                steam_app_id = COALESCE(steam_app_id, ?7)
+            WHERE id = ?8"#,
+            params![
+                developer,
+                publisher,
+                release_year,
+                description,
+                genres_json,
+                genre,
+                steam_id,
+                id
+            ],
+        )?;
+        self.get_game(id)?
+            .ok_or_else(|| anyhow::anyhow!("game not found"))
+    }
+
+    #[allow(dead_code)]
+    pub fn set_logo_path(&self, id: &str, path: &str) -> Result<Game> {
+        self.conn.execute(
+            "UPDATE games SET logo_path = ?1 WHERE id = ?2",
+            params![path, id],
+        )?;
+        self.get_game(id)?
+            .ok_or_else(|| anyhow::anyhow!("game not found"))
+    }
+
+    pub fn apply_playnite_fields(
+        &self,
+        id: &str,
+        playtime_minutes: i64,
+        favorite: bool,
+        hidden: bool,
+        notes: Option<&str>,
+        tags: &[String],
+        developer: Option<&str>,
+        publisher: Option<&str>,
+        release_year: Option<i64>,
+        description: Option<&str>,
+        genres: &[String],
+        steam_app_id: Option<&str>,
+    ) -> Result<Game> {
+        let existing = self
+            .get_game(id)?
+            .ok_or_else(|| anyhow::anyhow!("game not found"))?;
+        let playtime = existing.playtime_minutes.max(playtime_minutes);
+        let fav = existing.favorite || favorite;
+        let hid = existing.hidden || hidden;
+        let notes = notes
+            .map(|s| s.to_string())
+            .or(existing.notes.clone());
+        let developer = developer
+            .map(|s| s.to_string())
+            .or(existing.developer.clone());
+        let publisher = publisher
+            .map(|s| s.to_string())
+            .or(existing.publisher.clone());
+        let release_year = release_year.or(existing.release_year);
+        let description = description
+            .map(|s| s.to_string())
+            .or(existing.description.clone());
+        let genres = if genres.is_empty() {
+            existing.genres.clone()
+        } else {
+            genres.to_vec()
+        };
+        let genres_json = serde_json::to_string(&genres).unwrap_or_default();
+        let genre = if genres.is_empty() {
+            existing.genre.clone()
+        } else {
+            Some(genres.join(", "))
+        };
+        self.conn.execute(
+            r#"UPDATE games SET
+                playtime_minutes = ?1,
+                favorite = ?2,
+                hidden = ?3,
+                notes = COALESCE(?4, notes),
+                developer = COALESCE(?5, developer),
+                publisher = COALESCE(?6, publisher),
+                release_year = COALESCE(?7, release_year),
+                description = COALESCE(?8, description),
+                genres_json = ?9,
+                genre = ?10,
+                steam_app_id = COALESCE(steam_app_id, ?11)
+            WHERE id = ?12"#,
+            params![
+                playtime,
+                fav as i64,
+                hid as i64,
+                notes,
+                developer,
+                publisher,
+                release_year,
+                description,
+                genres_json,
+                genre,
+                steam_app_id,
+                id
+            ],
+        )?;
+        let mut merged_tags = existing.tags;
+        for t in tags {
+            if !merged_tags.iter().any(|x| x.eq_ignore_ascii_case(t)) {
+                merged_tags.push(t.clone());
+            }
+        }
+        self.set_tags(id, &merged_tags)
+    }
+
+    pub fn insert_game_full(&self, game: &Game) -> Result<Game> {
+        let genres_json = serde_json::to_string(&game.genres).unwrap_or_default();
+        self.conn.execute(
+            r#"INSERT OR REPLACE INTO games (
+                id, name, store, launch_target, install_path, cover_url, cover_path,
+                favorite, hidden, missing, playtime_minutes, last_played_at, date_added,
+                steam_app_id, genre, notes, developer, publisher, release_year, description,
+                genres_json, hltb_main, hltb_extra, hltb_completionist, logo_path,
+                launch_args, working_dir, run_as_admin, config_path, mod_manager_path, save_folder
+            ) VALUES (
+                ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,
+                ?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31
+            )"#,
+            params![
+                game.id,
+                game.name,
+                game.store.as_str(),
+                game.launch_target,
+                game.install_path,
+                game.cover_url,
+                game.cover_path,
+                game.favorite as i64,
+                game.hidden as i64,
+                game.missing as i64,
+                game.playtime_minutes,
+                game.last_played_at,
+                game.date_added,
+                game.steam_app_id,
+                game.genre,
+                game.notes,
+                game.developer,
+                game.publisher,
+                game.release_year,
+                game.description,
+                genres_json,
+                game.hltb_main,
+                game.hltb_extra,
+                game.hltb_completionist,
+                game.logo_path,
+                game.launch_args,
+                game.working_dir,
+                game.run_as_admin as i64,
+                game.config_path,
+                game.mod_manager_path,
+                game.save_folder,
+            ],
+        )?;
+        self.set_tags(&game.id, &game.tags)
+    }
+
+    pub fn finalize_remove(&self, id: &str) -> Result<()> {
+        if self.get_game(id)?.is_some() {
+            return Ok(());
+        }
+        self.conn
+            .execute("DELETE FROM sessions WHERE game_id = ?1", params![id])?;
+        self.conn
+            .execute("DELETE FROM game_tags WHERE game_id = ?1", params![id])?;
+        Ok(())
+    }
+
+    pub fn merge_games(&self, keep_id: &str, source_ids: &[String]) -> Result<Game> {
+        let mut keep = self
+            .get_game(keep_id)?
+            .ok_or_else(|| anyhow::anyhow!("Keep game not found"))?;
+        for sid in source_ids {
+            if sid == keep_id {
+                continue;
+            }
+            let Some(src) = self.get_game(sid)? else {
+                continue;
+            };
+            keep.playtime_minutes += src.playtime_minutes;
+            keep.favorite = keep.favorite || src.favorite;
+            if keep.notes.as_ref().map(|s| s.trim().is_empty()).unwrap_or(true) {
+                keep.notes = src.notes.clone();
+            } else if let Some(n) = src.notes.filter(|s| !s.trim().is_empty()) {
+                let cur = keep.notes.clone().unwrap_or_default();
+                keep.notes = Some(format!("{cur}\n\n{n}"));
+            }
+            if keep.developer.is_none() {
+                keep.developer = src.developer.clone();
+            }
+            if keep.publisher.is_none() {
+                keep.publisher = src.publisher.clone();
+            }
+            if keep.release_year.is_none() {
+                keep.release_year = src.release_year;
+            }
+            if keep.description.is_none() {
+                keep.description = src.description.clone();
+            }
+            if keep.cover_path.is_none() {
+                keep.cover_path = src.cover_path.clone();
+            }
+            if keep.logo_path.is_none() {
+                keep.logo_path = src.logo_path.clone();
+            }
+            if keep.steam_app_id.is_none() {
+                keep.steam_app_id = src.steam_app_id.clone();
+            }
+            if keep.hltb_main.is_none() {
+                keep.hltb_main = src.hltb_main;
+            }
+            if keep.config_path.is_none() {
+                keep.config_path = src.config_path.clone();
+            }
+            if keep.mod_manager_path.is_none() {
+                keep.mod_manager_path = src.mod_manager_path.clone();
+            }
+            if keep.save_folder.is_none() {
+                keep.save_folder = src.save_folder.clone();
+            }
+            for g in src.genres {
+                if !keep.genres.iter().any(|x| x.eq_ignore_ascii_case(&g)) {
+                    keep.genres.push(g);
+                }
+            }
+            for t in src.tags {
+                if !keep.tags.iter().any(|x| x.eq_ignore_ascii_case(&t)) {
+                    keep.tags.push(t);
+                }
+            }
+            if let (Some(a), Some(b)) = (&keep.last_played_at, &src.last_played_at) {
+                if b > a {
+                    keep.last_played_at = src.last_played_at.clone();
+                }
+            } else if keep.last_played_at.is_none() {
+                keep.last_played_at = src.last_played_at.clone();
+            }
+            self.conn.execute(
+                "UPDATE sessions SET game_id = ?1 WHERE game_id = ?2",
+                params![keep_id, sid],
+            )?;
+            self.conn.execute(
+                "UPDATE game_group_members SET game_id = ?1 WHERE game_id = ?2",
+                params![keep_id, sid],
+            )?;
+            // unique constraint might fail if keep already in group
+            let _ = self.conn.execute(
+                "DELETE FROM game_group_members WHERE game_id = ?1",
+                params![sid],
+            );
+            self.remove_game(sid)?;
+        }
+        keep.genre = if keep.genres.is_empty() {
+            keep.genre.clone()
+        } else {
+            Some(keep.genres.join(", "))
+        };
+        self.insert_game_full(&keep)
+    }
+
+    pub fn suggest_duplicates(&self) -> Result<Vec<DuplicateGroup>> {
+        let games = self.list_games(true)?;
+        let mut buckets: std::collections::BTreeMap<String, Vec<Game>> =
+            std::collections::BTreeMap::new();
+        for g in games {
+            let key = normalize_dup_name(&g.name);
+            if key.len() < 4 {
+                continue;
+            }
+            buckets.entry(key).or_default().push(g);
+        }
+        Ok(buckets
+            .into_iter()
+            .filter(|(_, list)| list.len() >= 2)
+            .map(|(key, games)| DuplicateGroup { key, games })
+            .collect())
+    }
+
+    pub fn library_overview(&self) -> Result<LibraryOverview> {
+        let games = self.list_games(true)?;
+        let mut sess_stmt = self
+            .conn
+            .prepare("SELECT game_id, started_at, ended_at FROM sessions ORDER BY id ASC")?;
+        let sess_rows = sess_stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })?;
+
+        let now = Utc::now();
+        let today = now.date_naive();
+        let week_ago = now - Duration::days(7);
+        let year = now.year();
+        let mut minutes_this_week = 0i64;
+        let mut days_with_play: std::collections::BTreeSet<chrono::NaiveDate> =
+            std::collections::BTreeSet::new();
+        let mut year_minutes = 0i64;
+        let mut monthly = [0i64; 12];
+        let mut per_game_year: std::collections::HashMap<String, i64> =
+            std::collections::HashMap::new();
+
+        for row in sess_rows {
+            let (game_id, started, ended) = row?;
+            let Ok(start) = chrono::DateTime::parse_from_rfc3339(&started) else {
+                continue;
+            };
+            let start = start.with_timezone(&Utc);
+            let duration = session_duration_minutes(&started, ended.as_deref());
+            if duration <= 0 {
+                continue;
+            }
+            if start >= week_ago {
+                minutes_this_week += duration;
+            }
+            days_with_play.insert(start.date_naive());
+            if start.year() == year {
+                year_minutes += duration;
+                monthly[(start.month0() as usize).min(11)] += duration;
+                *per_game_year.entry(game_id).or_default() += duration;
+            }
+        }
+
+        let mut streak = 0i64;
+        let mut cursor = today;
+        // allow streak to start yesterday if no play today yet
+        if !days_with_play.contains(&today) {
+            cursor = today - Duration::days(1);
+        }
+        while days_with_play.contains(&cursor) {
+            streak += 1;
+            cursor -= Duration::days(1);
+        }
+
+        let most_played = games
+            .iter()
+            .filter(|g| g.playtime_minutes > 0)
+            .max_by_key(|g| g.playtime_minutes)
+            .map(|g| TopPlayedGame {
+                game_id: g.id.clone(),
+                name: g.name.clone(),
+                minutes: g.playtime_minutes,
+            });
+
+        let mut top: Vec<TopPlayedGame> = per_game_year
+            .into_iter()
+            .filter_map(|(id, minutes)| {
+                games.iter().find(|g| g.id == id).map(|g| TopPlayedGame {
+                    game_id: id,
+                    name: g.name.clone(),
+                    minutes,
+                })
+            })
+            .collect();
+        top.sort_by(|a, b| b.minutes.cmp(&a.minutes));
+        top.truncate(8);
+
+        let monthly_pts: Vec<DailyPlaytime> = (1..=12)
+            .map(|m| DailyPlaytime {
+                day: format!("{year}-{m:02}"),
+                minutes: monthly[(m - 1) as usize],
+            })
+            .collect();
+
+        let total_playtime_minutes = games.iter().map(|g| g.playtime_minutes).sum();
+        let games_played = games.iter().filter(|g| g.playtime_minutes > 0).count();
+        let minutes_this_week = minutes_this_week.min(total_playtime_minutes);
+
+        Ok(LibraryOverview {
+            hours_this_week: minutes_this_week as f64 / 60.0,
+            minutes_this_week,
+            most_played,
+            streak_days: streak,
+            year_in_review: YearInReview {
+                year,
+                total_minutes: year_minutes,
+                monthly: monthly_pts,
+                top_games: top,
+            },
+            total_playtime_minutes,
+            games_played,
+        })
+    }
+
     fn get_group(&self, id: &str) -> Result<Option<GameGroup>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, sort_order, created_at FROM game_groups WHERE id = ?1",
@@ -854,6 +1558,14 @@ pub fn app_data_dir() -> PathBuf {
     let old_dir = root.join(LEGACY_APP_DATA_FOLDER);
     migrate_legacy_app_data(&old_dir, &new_dir);
     new_dir
+}
+
+/// Wipe app data if the user requested a full reset on the previous run.
+pub fn apply_pending_reset() {
+    let dir = app_data_dir();
+    if dir.join(".reset").exists() {
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 /// Move `%APPDATA%\UnifiedGameLauncher` → `%APPDATA%\IntelLauncher` (once).

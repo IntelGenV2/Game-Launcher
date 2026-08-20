@@ -1,4 +1,6 @@
 import { getVersion } from "@tauri-apps/api/app";
+import { invoke } from "@tauri-apps/api/core";
+import { open as openDialog, save } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check } from "@tauri-apps/plugin-updater";
@@ -20,13 +22,14 @@ import { useEffect, useState } from "react";
 interface Props {
   open: boolean;
   settings: AppSettings;
-  dataPath: string;
   onClose: () => void;
   onSave: (settings: AppSettings) => Promise<void>;
   onPreviewAppearance: (prefs: AppearancePrefs) => void;
+  onResetArt: () => Promise<void>;
+  onResetStats: () => Promise<void>;
 }
 
-type Section = "appearance" | "library" | "covers" | "updates";
+type Section = "appearance" | "library" | "covers" | "system" | "updates" | "reset";
 
 type UpdateStatus =
   | { kind: "idle" }
@@ -43,16 +46,19 @@ const SECTIONS: { id: Section; label: string }[] = [
   { id: "appearance", label: "Appearance" },
   { id: "library", label: "Library" },
   { id: "covers", label: "Covers" },
+  { id: "system", label: "System" },
   { id: "updates", label: "Updates" },
+  { id: "reset", label: "Reset" },
 ];
 
 export function SettingsModal({
   open,
   settings,
-  dataPath,
   onClose,
   onSave,
   onPreviewAppearance,
+  onResetArt,
+  onResetStats,
 }: Props) {
   const [section, setSection] = useState<Section>("appearance");
   const [apiKey, setApiKey] = useState(settings.steamGridDbApiKey ?? "");
@@ -64,10 +70,15 @@ export function SettingsModal({
   const [coverCorners, setCoverCorners] = useState<CoverCorners>("soft");
   const [coverShape, setCoverShape] = useState<CoverShape>("portrait");
   const [reduceMotion, setReduceMotion] = useState(false);
+  const [startWithWindows, setStartWithWindows] = useState(false);
+  const [closeToTray, setCloseToTray] = useState(false);
+  const [startInBackground, setStartInBackground] = useState(false);
   const [saving, setSaving] = useState(false);
   const [appVersion, setAppVersion] = useState<string>("…");
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({ kind: "idle" });
   const [pendingUpdate, setPendingUpdate] = useState<Awaited<ReturnType<typeof check>>>(null);
+  const [sysBusy, setSysBusy] = useState<string | null>(null);
+  const [sysMsg, setSysMsg] = useState<string | null>(null);
 
   function currentPrefs(): AppearancePrefs {
     return {
@@ -93,6 +104,10 @@ export function SettingsModal({
     setCoverCorners(a.coverCorners ?? "soft");
     setCoverShape(a.coverShape ?? "portrait");
     setReduceMotion(a.reduceMotion === true);
+    setStartWithWindows(s.startWithWindows === true);
+    setCloseToTray(s.closeToTray === true);
+    setStartInBackground(s.startInBackground === true);
+    setSysMsg(null);
   }
 
   useEffect(() => {
@@ -218,7 +233,6 @@ export function SettingsModal({
           <div className="settings-body">
             {section === "appearance" && (
               <>
-                <p className="settings-lead">Theme, card size, and how the grid looks.</p>
                 <div className="field">
                   <label>Theme</label>
                   <div className="theme-grid">
@@ -326,19 +340,102 @@ export function SettingsModal({
 
             {section === "library" && (
               <>
-                <p className="settings-lead">Where library data and cached covers are stored.</p>
                 <div className="field">
-                  <label>Library data folder</label>
-                  <input type="text" readOnly value={dataPath || "—"} />
+                  <label>Backup</label>
+                  <button
+                    type="button"
+                    className="btn"
+                    disabled={!!sysBusy}
+                    onClick={async () => {
+                      const dest = await save({
+                        defaultPath: "IntelLauncher-backup.zip",
+                        filters: [{ name: "Zip", extensions: ["zip"] }],
+                      });
+                      if (!dest || typeof dest !== "string") return;
+                      setSysBusy("backup");
+                      setSysMsg(null);
+                      try {
+                        await invoke("export_backup", { dest });
+                        setSysMsg("Backup saved.");
+                      } catch (e) {
+                        setSysMsg(String(e));
+                      } finally {
+                        setSysBusy(null);
+                      }
+                    }}
+                  >
+                    {sysBusy === "backup" ? "Exporting…" : "Export library zip"}
+                  </button>
                 </div>
+                <div className="field">
+                  <label>Import from Playnite</label>
+                  <div className="path-row">
+                    <button
+                      type="button"
+                      className="btn"
+                      disabled={!!sysBusy}
+                      onClick={async () => {
+                        const suggested = await invoke<string | null>("default_playnite_path").catch(() => null);
+                        const picked = await openDialog({
+                          directory: true,
+                          defaultPath: suggested ?? undefined,
+                          title: "Select Playnite data folder or export",
+                        });
+                        if (!picked || typeof picked !== "string") return;
+                        setSysBusy("playnite");
+                        setSysMsg(null);
+                        try {
+                          const r = await invoke<{ updated: number; added: number; skipped: number }>(
+                            "import_playnite",
+                            { path: picked },
+                          );
+                          setSysMsg(`Playnite import: ${r.updated} updated, ${r.added} added, ${r.skipped} skipped.`);
+                        } catch (e) {
+                          setSysMsg(String(e));
+                        } finally {
+                          setSysBusy(null);
+                        }
+                      }}
+                    >
+                      {sysBusy === "playnite" ? "Importing…" : "Choose Playnite folder"}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn"
+                      disabled={!!sysBusy}
+                      onClick={async () => {
+                        const picked = await openDialog({
+                          multiple: false,
+                          filters: [{ name: "Playnite export", extensions: ["yaml", "yml", "json"] }],
+                        });
+                        if (!picked || typeof picked !== "string") return;
+                        setSysBusy("playnite");
+                        setSysMsg(null);
+                        try {
+                          const r = await invoke<{ updated: number; added: number; skipped: number }>(
+                            "import_playnite",
+                            { path: picked },
+                          );
+                          setSysMsg(`Playnite import: ${r.updated} updated, ${r.added} added, ${r.skipped} skipped.`);
+                        } catch (e) {
+                          setSysMsg(String(e));
+                        } finally {
+                          setSysBusy(null);
+                        }
+                      }}
+                    >
+                      YAML / JSON file
+                    </button>
+                  </div>
+                </div>
+                {sysMsg && <p className="hint">{sysMsg}</p>}
               </>
             )}
 
             {section === "covers" && (
               <>
                 <p className="settings-lead">
-                  Steam covers work automatically. Add a SteamGridDB key for better Epic/Xbox/EA
-                  matches, or set cover art per game.
+                  Add a SteamGridDB key for better Epic/Xbox/EA matches.
                 </p>
                 <div className="field">
                   <label htmlFor="sgdb">SteamGridDB API key</label>
@@ -351,6 +448,49 @@ export function SettingsModal({
                     autoComplete="off"
                   />
                   <span className="hint">Free key at steamgriddb.com/profile/preferences/api</span>
+                </div>
+              </>
+            )}
+
+            {section === "system" && (
+              <>
+                <p className="settings-lead">Startup and tray</p>
+                <div className="field toggle-stack">
+                  <label className="toggle-row">
+                    <input
+                      type="checkbox"
+                      checked={startWithWindows}
+                      onChange={(e) => {
+                        const on = e.target.checked;
+                        setStartWithWindows(on);
+                        if (on) {
+                          setStartInBackground(true);
+                          setCloseToTray(true);
+                        }
+                      }}
+                    />
+                    Start with Windows
+                  </label>
+                  <label className="toggle-row">
+                    <input
+                      type="checkbox"
+                      checked={startInBackground}
+                      onChange={(e) => {
+                        const on = e.target.checked;
+                        setStartInBackground(on);
+                        if (on) setCloseToTray(true);
+                      }}
+                    />
+                    Start in background (tray)
+                  </label>
+                  <label className="toggle-row">
+                    <input
+                      type="checkbox"
+                      checked={closeToTray}
+                      onChange={(e) => setCloseToTray(e.target.checked)}
+                    />
+                    Close to tray instead of quitting
+                  </label>
                 </div>
               </>
             )}
@@ -411,6 +551,97 @@ export function SettingsModal({
                 </div>
               </>
             )}
+
+            {section === "reset" && (
+              <>
+                <div className="field">
+                  <label>Stats</label>
+                  <button
+                    type="button"
+                    className="btn"
+                    disabled={!!sysBusy}
+                    onClick={async () => {
+                      if (
+                        !window.confirm(
+                          "Reset all playtime, last played, and session history? Your games stay in the library.",
+                        )
+                      ) {
+                        return;
+                      }
+                      setSysBusy("reset-stats");
+                      setSysMsg(null);
+                      try {
+                        await onResetStats();
+                        setSysMsg("Playtime and sessions cleared.");
+                      } catch (e) {
+                        setSysMsg(String(e));
+                      } finally {
+                        setSysBusy(null);
+                      }
+                    }}
+                  >
+                    {sysBusy === "reset-stats" ? "Resetting…" : "Reset stats"}
+                  </button>
+                </div>
+                <div className="field">
+                  <label>Cover art</label>
+                  <button
+                    type="button"
+                    className="btn"
+                    disabled={!!sysBusy}
+                    onClick={async () => {
+                      if (
+                        !window.confirm(
+                          "Delete all downloaded and custom cover art, then fetch covers again?",
+                        )
+                      ) {
+                        return;
+                      }
+                      setSysBusy("reset-art");
+                      setSysMsg(null);
+                      try {
+                        await onResetArt();
+                        setSysMsg("Cover art reset. Fetching replacements…");
+                      } catch (e) {
+                        setSysMsg(String(e));
+                      } finally {
+                        setSysBusy(null);
+                      }
+                    }}
+                  >
+                    {sysBusy === "reset-art" ? "Resetting…" : "Reset all art"}
+                  </button>
+                </div>
+                <div className="field">
+                  <label>Whole app</label>
+                  <button
+                    type="button"
+                    className="btn btn-danger"
+                    disabled={!!sysBusy}
+                    onClick={async () => {
+                      if (
+                        !window.confirm(
+                          "Reset the app? This deletes your library, settings, groups, and covers. The launcher will restart empty.",
+                        )
+                      ) {
+                        return;
+                      }
+                      setSysBusy("reset-app");
+                      try {
+                        await invoke("reset_app");
+                        await relaunch();
+                      } catch (e) {
+                        setSysBusy(null);
+                        setSysMsg(String(e));
+                      }
+                    }}
+                  >
+                    {sysBusy === "reset-app" ? "Restarting…" : "Reset app"}
+                  </button>
+                </div>
+                {sysMsg && <p className="hint">{sysMsg}</p>}
+              </>
+            )}
           </div>
         </div>
 
@@ -436,6 +667,9 @@ export function SettingsModal({
                   coverCorners,
                   coverShape,
                   reduceMotion,
+                  startWithWindows,
+                  closeToTray,
+                  startInBackground,
                 });
                 onClose();
               } finally {

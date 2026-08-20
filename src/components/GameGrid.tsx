@@ -45,6 +45,10 @@ interface Props {
   selectedIds?: Set<string>;
   onToggleSelect?: (game: Game) => void;
   onFocusablesChange?: (keys: string[]) => void;
+  onOpenSaveFolder?: (game: Game) => void;
+  emptyTitle?: string;
+  emptyBody?: string;
+  active?: boolean;
 }
 
 function groupAccent(id: string): string {
@@ -91,6 +95,10 @@ export function GameGrid({
   selectedIds,
   onToggleSelect,
   onFocusablesChange,
+  onOpenSaveFolder,
+  emptyTitle,
+  emptyBody,
+  active = true,
 }: Props) {
   const gamesGridRef = useRef<HTMLDivElement>(null);
   const [cols, setCols] = useState(1);
@@ -186,6 +194,47 @@ export function GameGrid({
       mo.disconnect();
     };
   }, [ungroupedGames.length, groupItems.length]);
+
+  const [visibleRange, setVisibleRange] = useState({ from: 0, to: 24, rowH: 260 });
+  useEffect(() => {
+    if (!active) return;
+    const scroller = document.querySelector(".main") as HTMLElement | null;
+    const grid = gamesGridRef.current;
+    if (!scroller || !grid) return;
+    const update = () => {
+      const c = Math.max(1, cols);
+      const minRaw = getComputedStyle(document.documentElement).getPropertyValue("--card-min").trim();
+      const min = parseFloat(minRaw) || 150;
+      const rowH = Math.max(180, min * 1.65);
+      const gridRect = grid.getBoundingClientRect();
+      const scrollerRect = scroller.getBoundingClientRect();
+      const gridTop = gridRect.top - scrollerRect.top + scroller.scrollTop;
+      const startRow = Math.max(0, Math.floor((scroller.scrollTop - gridTop) / rowH) - 1);
+      const visRows = Math.max(3, Math.ceil(scroller.clientHeight / rowH) + 2);
+      let from = startRow * c;
+      let to = from + visRows * c;
+      if (focusKey?.startsWith("game:")) {
+        const idx = ungroupedGames.findIndex((g) => `game:${g.id}` === focusKey);
+        if (idx >= 0) {
+          from = Math.min(from, Math.max(0, idx - c));
+          to = Math.max(to, idx + c + 1);
+        }
+      }
+      from = Math.max(0, from);
+      to = Math.min(ungroupedGames.length, to);
+      if (to - from > 36) to = from + 36;
+      setVisibleRange((prev) =>
+        prev.from === from && prev.to === to && prev.rowH === rowH ? prev : { from, to, rowH },
+      );
+    };
+    update();
+    scroller.addEventListener("scroll", update, { passive: true });
+    window.addEventListener("resize", update);
+    return () => {
+      scroller.removeEventListener("scroll", update);
+      window.removeEventListener("resize", update);
+    };
+  }, [cols, ungroupedGames, focusKey, active]);
 
   const focusables = useMemo(() => {
     const keys: string[] = [];
@@ -367,9 +416,14 @@ export function GameGrid({
 
   if (groupItems.length === 0 && ungroupedGames.length === 0) {
     return (
-      <div className="empty">
-        <h2>No games match</h2>
-        <p>Try clearing filters or running a rescan.</p>
+      <div className="empty empty-filter">
+        <div className="empty-art" aria-hidden>
+          <span />
+          <span />
+          <span />
+        </div>
+        <h2>{emptyTitle ?? "No games match"}</h2>
+        <p>{emptyBody ?? "Try clearing filters or running a rescan."}</p>
       </div>
     );
   }
@@ -431,6 +485,7 @@ export function GameGrid({
                         onToggleFavorite={onToggleFavorite}
                         onHide={onHide}
                         onOpenFolder={onOpenFolder}
+                        onOpenSaveFolder={onOpenSaveFolder}
                         onAddToGroup={onRequestAddToGroup}
                         onCreateGroup={onCreateGroup}
                         onRemoveFromGroup={() => onRemoveFromGroup(item.group, game)}
@@ -467,7 +522,18 @@ export function GameGrid({
       <section className="library-section games-section">
         {groupItems.length > 0 && <h3 className="section-label">Games</h3>}
         <div className="game-grid" ref={gamesGridRef}>
-          {ungroupedGames.map((game, index) => {
+          {visibleRange.from > 0 ? (
+            <div
+              className="grid-spacer"
+              style={{
+                gridColumn: "1 / -1",
+                height: Math.floor(visibleRange.from / Math.max(1, cols)) * visibleRange.rowH,
+              }}
+              aria-hidden
+            />
+          ) : null}
+          {ungroupedGames.slice(visibleRange.from, visibleRange.to).map((game, i) => {
+            const index = visibleRange.from + i;
             const layoutKey = gameOrderKey(game.id);
             return (
               <GameTile
@@ -490,11 +556,24 @@ export function GameGrid({
                 onToggleFavorite={onToggleFavorite}
                 onHide={onHide}
                 onOpenFolder={onOpenFolder}
+                onOpenSaveFolder={onOpenSaveFolder}
                 onAddToGroup={onRequestAddToGroup}
                 onCreateGroup={onCreateGroup}
               />
             );
           })}
+          {visibleRange.to < ungroupedGames.length ? (
+            <div
+              className="grid-spacer"
+              style={{
+                gridColumn: "1 / -1",
+                height:
+                  Math.ceil((ungroupedGames.length - visibleRange.to) / Math.max(1, cols)) *
+                  visibleRange.rowH,
+              }}
+              aria-hidden
+            />
+          ) : null}
           {Array.from({ length: ghosts }, (_, i) => (
             <button
               key={`ghost-${i}`}

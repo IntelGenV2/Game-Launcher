@@ -1,5 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { Game, GameGroup, coverSrc } from "../types";
+import { Game, GameGroup } from "../types";
+import { CoverImg } from "./CoverImg";
+import {
+  TileContextMenu,
+  type MenuAnchor,
+  anchorFromElement,
+  anchorFromPoint,
+} from "./TileContextMenu";
 
 interface Props {
   group: GameGroup;
@@ -31,17 +38,28 @@ export function GroupTile({
   focusActive = false,
 }: Props) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [menuAnchor, setMenuAnchor] = useState<MenuAnchor | null>(null);
   const suppressClick = useRef(false);
-  const menuRef = useRef<HTMLDivElement>(null);
+  const menuBtnRef = useRef<HTMLButtonElement>(null);
   const covers = members.slice(0, 3);
+
+  function openMenu(anchor: MenuAnchor | null) {
+    if (!anchor) return;
+    setMenuAnchor(anchor);
+    setMenuOpen(true);
+  }
+
+  function closeMenu() {
+    setMenuOpen(false);
+  }
 
   useEffect(() => {
     if (!menuOpen) return;
-    const onDoc = (e: MouseEvent) => {
-      if (!menuRef.current?.contains(e.target as Node)) setMenuOpen(false);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMenuOpen(false);
     };
-    document.addEventListener("mousedown", onDoc);
-    return () => document.removeEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
   }, [menuOpen]);
 
   useEffect(() => {
@@ -79,17 +97,23 @@ export function GroupTile({
           onOpen();
         }
       }}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        openMenu(anchorFromPoint(e.clientX, e.clientY));
+      }}
     >
       <div className="cover group-stack">
         <div className="badge-row">
           <span className="group-count">{members.length}</span>
           <button
             type="button"
+            ref={menuBtnRef}
             className="menu-btn"
             title="More"
             onClick={(e) => {
               e.stopPropagation();
-              setMenuOpen((v) => !v);
+              if (menuOpen) closeMenu();
+              else openMenu(anchorFromElement(menuBtnRef.current));
             }}
           >
             ⋯
@@ -100,62 +124,51 @@ export function GroupTile({
           {covers.length === 0 ? (
             <div className="cover-fallback stack-card">?</div>
           ) : (
-            covers.map((g, i) => {
-              const src = coverSrc(g, coverMap[g.id]);
-              return (
+            covers.map((g, i) => (
                 <div
                   key={g.id}
                   className={`stack-card stack-card-${i}`}
                   style={{ zIndex: covers.length - i }}
                 >
-                  {src ? (
-                    <img src={src} alt="" draggable={false} />
-                  ) : (
-                    <div className="cover-fallback">
-                      {g.name.trim().charAt(0).toUpperCase() || "?"}
-                    </div>
-                  )}
+                  <CoverImg game={g} override={coverMap[g.id]} draggable={false} allowRemote={false} />
                 </div>
-              );
-            })
+            ))
           )}
         </div>
       </div>
 
-      {menuOpen && (
-        <div className="context-menu" ref={menuRef} onClick={(e) => e.stopPropagation()}>
-          {onAddGames && (
-            <button
-              type="button"
-              onClick={() => {
-                onAddGames();
-                setMenuOpen(false);
-              }}
-            >
-              Add games…
-            </button>
-          )}
+      <TileContextMenu open={menuOpen} anchor={menuAnchor} onClose={closeMenu}>
+        {onAddGames && (
           <button
             type="button"
             onClick={() => {
-              onRename(group);
-              setMenuOpen(false);
+              onAddGames();
+              closeMenu();
             }}
           >
-            Rename group
+            Add games…
           </button>
-          <button
-            type="button"
-            className="danger"
-            onClick={() => {
-              onDelete(group);
-              setMenuOpen(false);
-            }}
-          >
-            Delete group
-          </button>
-        </div>
-      )}
+        )}
+        <button
+          type="button"
+          onClick={() => {
+            onRename(group);
+            closeMenu();
+          }}
+        >
+          Rename group
+        </button>
+        <button
+          type="button"
+          className="danger"
+          onClick={() => {
+            onDelete(group);
+            closeMenu();
+          }}
+        >
+          Delete group
+        </button>
+      </TileContextMenu>
 
       <div className="tile-title">{group.name}</div>
       <div className="tile-store">

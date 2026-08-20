@@ -1,9 +1,17 @@
+use crate::backup;
 use crate::covers;
 use crate::db::{self, Database};
 use crate::launch;
-use crate::models::{AppSettings, Game, GameGroup, GameStats, LibraryStats};
+use crate::metadata;
+use crate::models::{
+    AppSettings, CoverChoiceGroup, DuplicateGroup, Game, GameGroup, GameStats, LibraryOverview,
+    LibraryStats, PlayniteImportResult, ScanStoreProgress,
+};
+use crate::playnite;
 use crate::scanners;
+use crate::system_info;
 use serde::Serialize;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -30,24 +38,72 @@ where
 }
 
 #[tauri::command]
+pub fn get_game(state: State<AppState>, id: String) -> Result<Game, String> {
+    with_db(&state, |db| {
+        db.get_game(&id)?
+            .ok_or_else(|| anyhow::anyhow!("game not found"))
+    })
+}
+
+#[tauri::command]
 pub fn list_games(state: State<AppState>) -> Result<Vec<Game>, String> {
-    with_db(&state, |db| db.list_games(false))
+    covers::warm_cover_catalog();
+    with_db(&state, |db| {
+        let mut games = db.list_games(false)?;
+        covers::reattach_local_covers(&mut games, |id, path| {
+            if let Some(p) = path {
+                let _ = db.set_cover(id, None, Some(p));
+            } else {
+                let _ = db.clear_cover_path(id);
+            }
+        });
+        Ok(games)
+    })
 }
 
 #[tauri::command]
 pub fn list_hidden_games(state: State<AppState>) -> Result<Vec<Game>, String> {
+    covers::warm_cover_catalog();
     with_db(&state, |db| {
-        let all = db.list_games(true)?;
+        let mut all = db.list_games(true)?;
+        covers::reattach_local_covers(&mut all, |id, path| {
+            if let Some(p) = path {
+                let _ = db.set_cover(id, None, Some(p));
+            } else {
+                let _ = db.clear_cover_path(id);
+            }
+        });
         Ok(all.into_iter().filter(|g| g.hidden).collect())
     })
 }
 
 #[tauri::command]
-pub fn rescan_library(state: State<AppState>) -> Result<Vec<Game>, String> {
-    let discovered = scanners::scan_all().map_err(user_err)?;
+pub fn rescan_library(app: AppHandle, state: State<AppState>) -> Result<Vec<Game>, String> {
+    let discovered = scanners::scan_all(|ev: ScanStoreProgress| {
+        let _ = app.emit("scan-progress", ev);
+    })
+    .map_err(user_err)?;
+    let _ = app.emit(
+        "scan-progress",
+        ScanStoreProgress {
+            store: "Library".into(),
+            status: "saving".into(),
+            count: discovered.len(),
+            message: None,
+        },
+    );
+    covers::warm_cover_catalog();
     with_db(&state, |db| {
         db.upsert_discovered(&discovered)?;
-        db.list_games(false)
+        let mut games = db.list_games(false)?;
+        covers::reattach_local_covers(&mut games, |id, path| {
+            if let Some(p) = path {
+                let _ = db.set_cover(id, None, Some(p));
+            } else {
+                let _ = db.clear_cover_path(id);
+            }
+        });
+        Ok(games)
     })
 }
 
@@ -109,7 +165,11 @@ pub fn get_settings(state: State<AppState>) -> Result<AppSettings, String> {
 
 #[tauri::command]
 pub fn save_settings(state: State<AppState>, settings: AppSettings) -> Result<(), String> {
-    with_db(&state, |db| db.save_settings(&settings))
+    with_db(&state, |db| db.save_settings(&settings))?;
+    let start = settings.start_with_windows.unwrap_or(false);
+    let background = settings.start_in_background.unwrap_or(false);
+    launch::set_start_with_windows(start, background).map_err(user_err)?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -132,7 +192,10 @@ struct CoverUpdatedPayload {
     steam_app_id: Option<String>,
     cover_url: Option<String>,
     genre: Option<String>,
+    logo_path: Option<String>,
 }
+
+static COVER_FETCH_RUNNING: AtomicBool = AtomicBool::new(false);
 
 /// Fetch missing covers / genre metadata in a background thread so the UI never freezes.
 /// Emits `cover-updated` per game and `covers-done` when finished.
@@ -142,11 +205,34 @@ pub fn fetch_covers(
     state: State<AppState>,
     ids: Option<Vec<String>>,
 ) -> Result<(), String> {
-    let (games, api_key) = with_db(&state, |db| {
+    covers::warm_cover_catalog();
+    let (games, api_key, attached) = with_db(&state, |db| {
         let settings = db.get_settings()?;
-        let games = db.list_games(true)?;
-        Ok((games, settings.steam_grid_db_api_key))
+        let mut games = db.list_games(true)?;
+        let attached = covers::reattach_local_covers(&mut games, |id, path| {
+            if let Some(p) = path {
+                let _ = db.set_cover(id, None, Some(p));
+            } else {
+                let _ = db.clear_cover_path(id);
+            }
+        });
+        Ok((games, settings.steam_grid_db_api_key, attached))
     })?;
+
+    for (id, path) in attached {
+        let steam_id = games.iter().find(|g| g.id == id).and_then(|g| g.steam_app_id.clone());
+        let _ = app.emit(
+            "cover-updated",
+            CoverUpdatedPayload {
+                id,
+                cover_path: path,
+                steam_app_id: steam_id.clone(),
+                cover_url: None,
+                genre: None,
+                logo_path: None,
+            },
+        );
+    }
 
     let targets: Vec<Game> = match ids {
         Some(ids) => games.into_iter().filter(|g| ids.contains(&g.id)).collect(),
@@ -158,7 +244,7 @@ pub fn fetch_covers(
                 }
                 let need_cover = match &g.cover_path {
                     None => true,
-                    Some(p) => !std::path::Path::new(p).exists(),
+                    Some(p) => !covers::is_portrait_cover_path(p),
                 };
                 let need_genre = g
                     .genre
@@ -167,7 +253,6 @@ pub fn fetch_covers(
                     .unwrap_or(true);
                 need_cover || need_genre
             })
-            .take(40)
             .collect(),
     };
 
@@ -176,7 +261,18 @@ pub fn fetch_covers(
         return Ok(());
     }
 
+    if COVER_FETCH_RUNNING.swap(true, Ordering::SeqCst) {
+        return Ok(());
+    }
+
     std::thread::spawn(move || {
+        struct FetchGuard;
+        impl Drop for FetchGuard {
+            fn drop(&mut self) {
+                COVER_FETCH_RUNNING.store(false, Ordering::SeqCst);
+            }
+        }
+        let _guard = FetchGuard;
         for game in targets {
             let fetched = match covers::ensure_cover(&game, api_key.as_deref()) {
                 Ok(Some(f)) => f,
@@ -190,28 +286,43 @@ pub fn fetch_covers(
                 let Ok(db) = state.db.lock() else {
                     break;
                 };
-                // Don't store legacy CDN library_600x900 URLs — many modern titles 404.
-                // The UI loads the local cover_path as a data URL instead.
-                let _ = db.set_cover(&game.id, None, Some(&fetched.path));
+                let has_file = !fetched.path.is_empty() && std::path::Path::new(&fetched.path).exists();
+                if has_file {
+                    let _ = db.set_cover(&game.id, None, Some(&fetched.path));
+                } else if let Some(steam_id) = fetched.steam_app_id.as_ref().or(game.steam_app_id.as_ref())
+                {
+                    let cdn = format!(
+                        "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{steam_id}/library_600x900.jpg"
+                    );
+                    let _ = db.set_cover(&game.id, Some(&cdn), None);
+                }
                 if let Some(steam_id) = &fetched.steam_app_id {
                     let _ = db.set_steam_app_id(&game.id, steam_id);
                 }
                 if let Some(genre) = &fetched.genre {
                     let _ = db.set_genre(&game.id, genre);
                 }
+                drop(db);
+                let steam_id = fetched.steam_app_id.clone().or(game.steam_app_id.clone());
+                let cover_path = if has_file {
+                    fetched.path
+                } else {
+                    game.cover_path.clone().unwrap_or_default()
+                };
+                let _ = app.emit(
+                    "cover-updated",
+                    CoverUpdatedPayload {
+                        id: game.id.clone(),
+                        cover_path,
+                        steam_app_id: steam_id.clone(),
+                        cover_url: None,
+                        genre: fetched.genre,
+                        logo_path: None,
+                    },
+                );
             }
-
-            let _ = app.emit(
-                "cover-updated",
-                CoverUpdatedPayload {
-                    id: game.id.clone(),
-                    cover_path: fetched.path,
-                    steam_app_id: fetched.steam_app_id,
-                    cover_url: None,
-                    genre: fetched.genre,
-                },
-            );
         }
+        COVER_FETCH_RUNNING.store(false, Ordering::SeqCst);
         let _ = app.emit("covers-done", ());
     });
 
@@ -239,68 +350,102 @@ pub fn set_custom_cover(state: State<AppState>, id: String, path: String) -> Res
 }
 
 #[tauri::command]
-pub fn remove_game(state: State<AppState>, id: String) -> Result<(), String> {
-    // Delete cached cover files for this game
-    let game = with_db(&state, |db| {
-        db.get_game(&id)?
-            .ok_or_else(|| anyhow::anyhow!("game not found"))
-    })?;
-    if let Some(path) = &game.cover_path {
-        let _ = std::fs::remove_file(path);
-    }
-    let safe = id.replace([':', '/', '\\'], "_");
-    if let Ok(entries) = std::fs::read_dir(db::covers_dir()) {
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if name.starts_with(&safe) {
-                let _ = std::fs::remove_file(entry.path());
-            }
-        }
-    }
-    with_db(&state, |db| db.remove_game(&id))
+pub fn list_cover_choice_groups(state: State<AppState>) -> Result<Vec<CoverChoiceGroup>, String> {
+    covers::warm_cover_catalog();
+    let games = with_db(&state, |db| db.list_games(false))?;
+    Ok(covers::cover_choice_groups(&games))
 }
 
 #[tauri::command]
-pub fn get_cover_data_url(state: State<AppState>, id: String) -> Result<Option<String>, String> {
-    let game = with_db(&state, |db| {
+pub fn list_cover_choices(state: State<AppState>, id: String) -> Result<CoverChoiceGroup, String> {
+    with_db(&state, |db| {
+        let game = db
+            .get_game(&id)?
+            .ok_or_else(|| anyhow::anyhow!("game not found"))?;
+        let paths = covers::cover_alternates_for(&game);
+        Ok(CoverChoiceGroup {
+            game_id: game.id,
+            name: game.name,
+            current_path: game.cover_path,
+            paths: paths
+                .into_iter()
+                .map(|p| p.to_string_lossy().to_string())
+                .collect(),
+        })
+    })
+}
+
+#[tauri::command]
+pub fn choose_cover(state: State<AppState>, id: String, path: String) -> Result<Game, String> {
+    with_db(&state, |db| {
+        let game = db
+            .get_game(&id)?
+            .ok_or_else(|| anyhow::anyhow!("game not found"))?;
+        if !covers::path_is_cover_choice(&game, &path) {
+            anyhow::bail!("That image is not a cover for this game");
+        }
+        if !covers::is_portrait_cover_path(&path) {
+            anyhow::bail!("Cover must be portrait box art (taller than wide)");
+        }
+        if !std::path::Path::new(&path).is_file() {
+            anyhow::bail!("Cover file not found");
+        }
+        db.set_cover(&id, None, Some(&path))?;
         db.get_game(&id)?
             .ok_or_else(|| anyhow::anyhow!("game not found"))
+    })
+}
+
+#[tauri::command]
+pub fn remove_game(state: State<AppState>, id: String) -> Result<Game, String> {
+    let game = with_db(&state, |db| {
+        let game = db
+            .get_game(&id)?
+            .ok_or_else(|| anyhow::anyhow!("game not found"))?;
+        db.remove_game(&id)?;
+        Ok(game)
     })?;
-    if let Some(path) = &game.cover_path {
-        return covers::cover_as_data_url(path)
-            .map(Some)
-            .map_err(user_err);
+    Ok(game)
+}
+
+#[tauri::command]
+pub fn restore_game(state: State<AppState>, game: Game) -> Result<Game, String> {
+    with_db(&state, |db| db.insert_game_full(&game))
+}
+
+#[tauri::command]
+pub fn finalize_remove(state: State<AppState>, id: String) -> Result<(), String> {
+    let gone = with_db(&state, |db| {
+        db.finalize_remove(&id)?;
+        Ok(db.get_game(&id)?.is_none())
+    })?;
+    if gone {
+        let safe = id.replace([':', '/', '\\'], "_");
+        if let Ok(entries) = std::fs::read_dir(db::covers_dir()) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with(&safe) {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
     }
-    if let Some(url) = &game.cover_url {
-        return Ok(Some(url.clone()));
-    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_cover_data_url(_state: State<AppState>, _id: String) -> Result<Option<String>, String> {
     Ok(None)
 }
 
 /// Batch-load local covers for the home grid (avoids N round-trips + cancel races).
+/// Intentionally empty: encoding every cover as base64 OOMs the WebView.
 #[tauri::command]
 pub fn get_cover_data_urls(
-    state: State<AppState>,
-    ids: Option<Vec<String>>,
+    _state: State<AppState>,
+    _ids: Option<Vec<String>>,
 ) -> Result<std::collections::HashMap<String, String>, String> {
-    let games = with_db(&state, |db| db.list_games(true))?;
-    let filter: Option<std::collections::HashSet<String>> = ids.map(|v| v.into_iter().collect());
-
-    let mut out = std::collections::HashMap::new();
-    for g in games {
-        if let Some(ref want) = filter {
-            if !want.contains(&g.id) {
-                continue;
-            }
-        }
-        let Some(path) = g.cover_path.as_deref() else {
-            continue;
-        };
-        if let Ok(data) = covers::cover_as_data_url(path) {
-            out.insert(g.id, data);
-        }
-    }
-    Ok(out)
+    Ok(std::collections::HashMap::new())
 }
 
 #[tauri::command]
@@ -356,4 +501,232 @@ pub fn remove_game_from_group(
     game_id: String,
 ) -> Result<GameGroup, String> {
     with_db(&state, |db| db.remove_game_from_group(&group_id, &game_id))
+}
+
+#[tauri::command]
+pub fn set_notes(state: State<AppState>, id: String, notes: String) -> Result<Game, String> {
+    with_db(&state, |db| db.set_notes(&id, &notes))
+}
+
+#[tauri::command]
+pub fn set_tags(state: State<AppState>, id: String, tags: Vec<String>) -> Result<Game, String> {
+    with_db(&state, |db| db.set_tags(&id, &tags))
+}
+
+#[tauri::command]
+pub fn set_launch_options(
+    state: State<AppState>,
+    id: String,
+    launch_args: Option<String>,
+    working_dir: Option<String>,
+    run_as_admin: bool,
+    save_folder: Option<String>,
+) -> Result<Game, String> {
+    with_db(&state, |db| {
+        db.set_launch_options(
+            &id,
+            launch_args.as_deref(),
+            working_dir.as_deref(),
+            run_as_admin,
+            save_folder.as_deref(),
+        )
+    })
+}
+
+#[tauri::command]
+pub fn fetch_game_metadata(state: State<AppState>, id: String) -> Result<Game, String> {
+    let (game, key) = with_db(&state, |db| {
+        let g = db
+            .get_game(&id)?
+            .ok_or_else(|| anyhow::anyhow!("game not found"))?;
+        let key = db.get_settings()?.steam_grid_db_api_key;
+        Ok((g, key))
+    })?;
+    let meta = metadata::fetch_for_game(&game, key.as_deref()).map_err(user_err)?;
+    with_db(&state, |db| db.apply_metadata(&id, &meta))
+}
+
+#[tauri::command]
+pub fn set_custom_logo(state: State<AppState>, id: String, _path: String) -> Result<Game, String> {
+    with_db(&state, |db| {
+        db.get_game(&id)?
+            .ok_or_else(|| anyhow::anyhow!("game not found"))
+    })
+}
+
+#[tauri::command]
+pub fn get_logo_data_url(_state: State<AppState>, _id: String) -> Result<Option<String>, String> {
+    Ok(None)
+}
+
+#[tauri::command]
+pub fn get_logo_data_urls(
+    _state: State<AppState>,
+    _ids: Option<Vec<String>>,
+) -> Result<std::collections::HashMap<String, String>, String> {
+    Ok(std::collections::HashMap::new())
+}
+
+#[tauri::command]
+pub fn launch_action(
+    state: State<AppState>,
+    id: String,
+    action: String,
+) -> Result<Game, String> {
+    let game = with_db(&state, |db| {
+        db.get_game(&id)?
+            .ok_or_else(|| anyhow::anyhow!("game not found"))
+    })?;
+    match action.as_str() {
+        "play" => {
+            with_db(&state, |db| {
+                db.record_launch(&id)?;
+                Ok(())
+            })?;
+            launch::launch_game(&game).map_err(user_err)?;
+        }
+        "save_folder" => {
+            let path = game
+                .save_folder
+                .as_deref()
+                .ok_or_else(|| "No save folder set for this game".to_string())?;
+            launch::open_folder(path).map_err(user_err)?;
+        }
+        _ => return Err("Unknown action".into()),
+    }
+    with_db(&state, |db| {
+        db.get_game(&id)?
+            .ok_or_else(|| anyhow::anyhow!("game not found"))
+    })
+}
+
+#[tauri::command]
+pub fn library_overview(state: State<AppState>) -> Result<LibraryOverview, String> {
+    with_db(&state, |db| db.library_overview())
+}
+
+#[tauri::command]
+pub fn suggest_duplicates(state: State<AppState>) -> Result<Vec<DuplicateGroup>, String> {
+    with_db(&state, |db| db.suggest_duplicates())
+}
+
+#[tauri::command]
+pub fn merge_games(
+    state: State<AppState>,
+    keep_id: String,
+    source_ids: Vec<String>,
+) -> Result<Game, String> {
+    with_db(&state, |db| db.merge_games(&keep_id, &source_ids))
+}
+
+#[tauri::command]
+pub fn export_backup(dest: String) -> Result<String, String> {
+    backup::export_library_zip(&dest).map_err(user_err)
+}
+
+#[tauri::command]
+pub fn import_playnite(
+    state: State<AppState>,
+    path: String,
+) -> Result<PlayniteImportResult, String> {
+    let (imported, mut result) = playnite::load_from_path(&path).map_err(user_err)?;
+    with_db(&state, |db| {
+        let existing = db.list_games(true)?;
+        for item in imported {
+            let key = playnite::normalize_name(&item.name);
+            if let Some(found) = existing.iter().find(|g| playnite::normalize_name(&g.name) == key)
+            {
+                db.apply_playnite_fields(
+                    &found.id,
+                    item.playtime_minutes,
+                    item.favorite,
+                    item.hidden,
+                    item.notes.as_deref(),
+                    &item.tags,
+                    item.developer.as_deref(),
+                    item.publisher.as_deref(),
+                    item.release_year,
+                    item.description.as_deref(),
+                    &item.genres,
+                    item.steam_app_id.as_deref(),
+                )?;
+                result.updated += 1;
+            } else if let Some(disc) = playnite::create_discovered(&item) {
+                let added = db.add_manual_game(
+                    &disc.id,
+                    &item.name,
+                    &disc.launch_target,
+                    disc.install_path.as_deref(),
+                )?;
+                db.apply_playnite_fields(
+                    &added.id,
+                    item.playtime_minutes,
+                    item.favorite,
+                    item.hidden,
+                    item.notes.as_deref(),
+                    &item.tags,
+                    item.developer.as_deref(),
+                    item.publisher.as_deref(),
+                    item.release_year,
+                    item.description.as_deref(),
+                    &item.genres,
+                    item.steam_app_id.as_deref(),
+                )?;
+                result.added += 1;
+            } else {
+                result.skipped += 1;
+            }
+        }
+        Ok(result)
+    })
+}
+
+#[tauri::command]
+pub fn default_playnite_path() -> Result<Option<String>, String> {
+    let dir = dirs::data_dir()
+        .map(|p| p.join("Playnite"))
+        .filter(|p| p.exists())
+        .map(|p| p.to_string_lossy().to_string());
+    Ok(dir)
+}
+
+#[tauri::command]
+pub fn started_in_background() -> bool {
+    std::env::args().any(|a| a == "--background")
+}
+
+#[tauri::command]
+pub fn system_info() -> system_info::SystemInfo {
+    system_info::collect()
+}
+
+#[tauri::command]
+pub fn reset_all_art(state: State<AppState>) -> Result<(), String> {
+    with_db(&state, |db| db.clear_all_covers())?;
+    let dir = db::covers_dir();
+    if dir.exists() {
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file() {
+                    let _ = std::fs::remove_file(path);
+                }
+            }
+        }
+    }
+    covers::invalidate_cover_catalog();
+    Ok(())
+}
+
+#[tauri::command]
+pub fn reset_all_stats(state: State<AppState>) -> Result<(), String> {
+    with_db(&state, |db| db.clear_all_stats())
+}
+
+#[tauri::command]
+pub fn reset_app() -> Result<(), String> {
+    let dir = db::app_data_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    std::fs::write(dir.join(".reset"), b"1").map_err(|e| e.to_string())?;
+    Ok(())
 }

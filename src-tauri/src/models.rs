@@ -81,6 +81,43 @@ pub struct Game {
     pub date_added: String,
     pub steam_app_id: Option<String>,
     pub genre: Option<String>,
+    pub tags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+    pub developer: Option<String>,
+    pub publisher: Option<String>,
+    pub release_year: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub genres: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hltb_main: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hltb_extra: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hltb_completionist: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logo_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launch_args: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_dir: Option<String>,
+    pub run_as_admin: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mod_manager_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub save_folder: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CoverChoiceGroup {
+    pub game_id: String,
+    pub name: String,
+    pub current_path: Option<String>,
+    pub paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,6 +146,9 @@ pub struct AppSettings {
     pub cover_corners: Option<String>,
     pub cover_shape: Option<String>,
     pub reduce_motion: Option<bool>,
+    pub start_with_windows: Option<bool>,
+    pub close_to_tray: Option<bool>,
+    pub start_in_background: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -157,4 +197,57 @@ pub struct GameGroup {
     pub sort_order: i64,
     pub created_at: String,
     pub game_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanStoreProgress {
+    pub store: String,
+    pub status: String,
+    pub count: usize,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TopPlayedGame {
+    pub game_id: String,
+    pub name: String,
+    pub minutes: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct YearInReview {
+    pub year: i32,
+    pub total_minutes: i64,
+    pub monthly: Vec<DailyPlaytime>,
+    pub top_games: Vec<TopPlayedGame>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryOverview {
+    pub hours_this_week: f64,
+    pub minutes_this_week: i64,
+    pub most_played: Option<TopPlayedGame>,
+    pub streak_days: i64,
+    pub year_in_review: YearInReview,
+    pub total_playtime_minutes: i64,
+    pub games_played: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DuplicateGroup {
+    pub key: String,
+    pub games: Vec<Game>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlayniteImportResult {
+    pub updated: usize,
+    pub added: usize,
+    pub skipped: usize,
 }
