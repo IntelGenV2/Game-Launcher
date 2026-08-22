@@ -8,10 +8,14 @@ export type PadAction =
   | "confirm"
   | "back"
   | "favorite"
-  | "select";
+  | "select"
+  | "menu"
+  | "alt"
+  | "lb"
+  | "rb";
 
-const REPEAT_MS = 180;
-const DEADZONE = 0.55;
+const REPEAT_MS = 150;
+const DEADZONE = 0.42;
 
 /**
  * Lightweight Gamepad API poller. Fires discrete actions with repeat for D-pad / stick.
@@ -36,13 +40,13 @@ export function useGamepad(onAction: (action: PadAction) => void, enabled = true
         any = true;
         const now = performance.now();
 
-        const fire = (name: string, action: PadAction, pressed: boolean) => {
+        const fire = (name: string, action: PadAction, pressed: boolean, repeat = false) => {
           const key = `${pad.index}:${name}`;
           const was = prevRef.current[key] ?? false;
           if (pressed && !was) {
             onActionRef.current(action);
             lastFireRef.current[key] = now;
-          } else if (pressed && was) {
+          } else if (repeat && pressed && was) {
             const last = lastFireRef.current[key] ?? 0;
             if (now - last >= REPEAT_MS) {
               onActionRef.current(action);
@@ -59,18 +63,18 @@ export function useGamepad(onAction: (action: PadAction) => void, enabled = true
         const up = (b[12]?.pressed ?? false) || (ax[1] ?? 0) < -DEADZONE;
         const down = (b[13]?.pressed ?? false) || (ax[1] ?? 0) > DEADZONE;
 
-        fire("left", "left", left);
-        fire("right", "right", right);
-        fire("up", "up", up);
-        fire("down", "down", down);
-        // A / Cross
+        fire("left", "left", left, true);
+        fire("right", "right", right, true);
+        fire("up", "up", up, true);
+        fire("down", "down", down, true);
         fire("a", "confirm", b[0]?.pressed ?? false);
-        // B / Circle
         fire("b", "back", b[1]?.pressed ?? false);
-        // X / Square
         fire("x", "favorite", b[2]?.pressed ?? false);
-        // View / Select / Back button
+        fire("y", "alt", b[3]?.pressed ?? false);
         fire("select", "select", b[8]?.pressed ?? false);
+        fire("start", "menu", b[9]?.pressed ?? false);
+        fire("lb", "lb", b[4]?.pressed ?? false);
+        fire("rb", "rb", b[5]?.pressed ?? false);
       }
       setConnected(any);
       raf = requestAnimationFrame(tick);

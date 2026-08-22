@@ -40,17 +40,17 @@ fn session_duration_minutes(started: &str, ended: Option<&str>) -> i64 {
 }
 
 const GAME_COLS: &str = "id, name, store, launch_target, install_path, cover_url, cover_path,
-    favorite, hidden, missing, playtime_minutes, last_played_at, date_added, steam_app_id, genre,
-    notes, developer, publisher, release_year, description, genres_json, hltb_main, hltb_extra,
-    hltb_completionist, logo_path, launch_args, working_dir, run_as_admin, config_path,
-    mod_manager_path, save_folder";
+    cover_source, favorite, hidden, missing, playtime_minutes, last_played_at, date_added,
+    steam_app_id, genre, notes, developer, publisher, release_year, description, genres_json,
+    hltb_main, hltb_extra, hltb_completionist, logo_path, launch_args, working_dir, run_as_admin,
+    config_path, mod_manager_path, save_folder";
 
 /// Library grid payload: skip Wikipedia dumps, notes, and launch-only fields.
 const LIST_GAME_COLS: &str = "id, name, store, launch_target, install_path, cover_url, cover_path,
-    favorite, hidden, missing, playtime_minutes, last_played_at, date_added, steam_app_id, genre,
-    NULL as notes, developer, publisher, release_year, NULL as description, genres_json,
-    NULL as hltb_main, NULL as hltb_extra, NULL as hltb_completionist, NULL as logo_path,
-    NULL as launch_args, NULL as working_dir, run_as_admin, NULL as config_path,
+    cover_source, favorite, hidden, missing, playtime_minutes, last_played_at, date_added,
+    steam_app_id, genre, NULL as notes, developer, publisher, release_year, NULL as description,
+    genres_json, NULL as hltb_main, NULL as hltb_extra, NULL as hltb_completionist,
+    NULL as logo_path, NULL as launch_args, NULL as working_dir, run_as_admin, NULL as config_path,
     NULL as mod_manager_path, NULL as save_folder";
 
 pub struct Database {
@@ -144,6 +144,7 @@ impl Database {
                 install_path TEXT,
                 cover_url TEXT,
                 cover_path TEXT,
+                cover_source TEXT,
                 favorite INTEGER NOT NULL DEFAULT 0,
                 hidden INTEGER NOT NULL DEFAULT 0,
                 missing INTEGER NOT NULL DEFAULT 0,
@@ -232,6 +233,7 @@ impl Database {
             "ALTER TABLE games ADD COLUMN mod_manager_path TEXT",
             "ALTER TABLE games ADD COLUMN save_folder TEXT",
             "ALTER TABLE games ADD COLUMN import_playtime INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE games ADD COLUMN cover_source TEXT",
         ] {
             let _ = self.conn.execute(col, []);
         }
@@ -274,6 +276,7 @@ impl Database {
             install_path: row.get("install_path")?,
             cover_url: row.get("cover_url")?,
             cover_path: row.get("cover_path")?,
+            cover_source: row.get("cover_source").unwrap_or(None),
             favorite: row.get::<_, i64>("favorite")? != 0,
             hidden: row.get::<_, i64>("hidden")? != 0,
             missing: row.get::<_, i64>("missing")? != 0,
@@ -534,6 +537,7 @@ impl Database {
         id: &str,
         cover_url: Option<&str>,
         cover_path: Option<&str>,
+        cover_source: Option<&str>,
     ) -> Result<()> {
         // Never clear an existing cover when a field is omitted — only overwrite when provided.
         if cover_url.is_some() && cover_path.is_some() {
@@ -552,6 +556,12 @@ impl Database {
                 params![cover_url, id],
             )?;
         }
+        if let Some(source) = cover_source {
+            self.conn.execute(
+                "UPDATE games SET cover_source = ?1 WHERE id = ?2",
+                params![source, id],
+            )?;
+        }
         Ok(())
     }
 
@@ -565,7 +575,7 @@ impl Database {
 
     pub fn clear_all_covers(&self) -> Result<()> {
         self.conn.execute(
-            "UPDATE games SET cover_path = NULL, cover_url = NULL, logo_path = NULL",
+            "UPDATE games SET cover_path = NULL, cover_url = NULL, cover_source = NULL, logo_path = NULL",
             [],
         )?;
         Ok(())
@@ -780,6 +790,9 @@ impl Database {
                 "start_in_background" => {
                     settings.start_in_background = Some(v == "1" || v == "true")
                 }
+                "hide_on_game_launch" => {
+                    settings.hide_on_game_launch = Some(v == "1" || v == "true")
+                }
                 _ => {}
             }
         }
@@ -854,6 +867,7 @@ impl Database {
         self.upsert_bool_setting("start_with_windows", settings.start_with_windows)?;
         self.upsert_bool_setting("close_to_tray", settings.close_to_tray)?;
         self.upsert_bool_setting("start_in_background", settings.start_in_background)?;
+        self.upsert_bool_setting("hide_on_game_launch", settings.hide_on_game_launch)?;
         Ok(())
     }
 
@@ -1252,14 +1266,14 @@ impl Database {
         let genres_json = serde_json::to_string(&game.genres).unwrap_or_default();
         self.conn.execute(
             r#"INSERT OR REPLACE INTO games (
-                id, name, store, launch_target, install_path, cover_url, cover_path,
+                id, name, store, launch_target, install_path, cover_url, cover_path, cover_source,
                 favorite, hidden, missing, playtime_minutes, last_played_at, date_added,
                 steam_app_id, genre, notes, developer, publisher, release_year, description,
                 genres_json, hltb_main, hltb_extra, hltb_completionist, logo_path,
                 launch_args, working_dir, run_as_admin, config_path, mod_manager_path, save_folder
             ) VALUES (
                 ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,
-                ?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31
+                ?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32
             )"#,
             params![
                 game.id,
@@ -1269,6 +1283,7 @@ impl Database {
                 game.install_path,
                 game.cover_url,
                 game.cover_path,
+                game.cover_source,
                 game.favorite as i64,
                 game.hidden as i64,
                 game.missing as i64,
@@ -1342,6 +1357,9 @@ impl Database {
             }
             if keep.cover_path.is_none() {
                 keep.cover_path = src.cover_path.clone();
+                if keep.cover_source.is_none() {
+                    keep.cover_source = src.cover_source.clone();
+                }
             }
             if keep.logo_path.is_none() {
                 keep.logo_path = src.logo_path.clone();

@@ -1,6 +1,7 @@
 use crate::backup;
 use crate::covers;
 use crate::db::{self, Database};
+use crate::game_watch;
 use crate::launch;
 use crate::metadata;
 use crate::models::{
@@ -11,12 +12,14 @@ use crate::playnite;
 use crate::scanners;
 use crate::system_info;
 use serde::Serialize;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 pub struct AppState {
     pub db: Mutex<Database>,
+    /// Bumped each time a hide-while-playing watch starts so older watchers stop.
+    pub hide_watch_gen: AtomicU64,
 }
 
 fn user_err(e: impl std::fmt::Display) -> String {
@@ -52,7 +55,7 @@ pub fn list_games(state: State<AppState>) -> Result<Vec<Game>, String> {
         let mut games = db.list_games(false)?;
         covers::reattach_local_covers(&mut games, |id, path| {
             if let Some(p) = path {
-                let _ = db.set_cover(id, None, Some(p));
+                let _ = db.set_cover(id, None, Some(p), None);
             } else {
                 let _ = db.clear_cover_path(id);
             }
@@ -68,7 +71,7 @@ pub fn list_hidden_games(state: State<AppState>) -> Result<Vec<Game>, String> {
         let mut all = db.list_games(true)?;
         covers::reattach_local_covers(&mut all, |id, path| {
             if let Some(p) = path {
-                let _ = db.set_cover(id, None, Some(p));
+                let _ = db.set_cover(id, None, Some(p), None);
             } else {
                 let _ = db.clear_cover_path(id);
             }
@@ -98,7 +101,7 @@ pub fn rescan_library(app: AppHandle, state: State<AppState>) -> Result<Vec<Game
         let mut games = db.list_games(false)?;
         covers::reattach_local_covers(&mut games, |id, path| {
             if let Some(p) = path {
-                let _ = db.set_cover(id, None, Some(p));
+                let _ = db.set_cover(id, None, Some(p), None);
             } else {
                 let _ = db.clear_cover_path(id);
             }
@@ -108,13 +111,14 @@ pub fn rescan_library(app: AppHandle, state: State<AppState>) -> Result<Vec<Game
 }
 
 #[tauri::command]
-pub fn launch_game(state: State<AppState>, id: String) -> Result<Game, String> {
+pub fn launch_game(app: AppHandle, state: State<AppState>, id: String) -> Result<Game, String> {
     let game = with_db(&state, |db| {
         db.record_launch(&id)?;
         db.get_game(&id)?
             .ok_or_else(|| anyhow::anyhow!("game not found"))
     })?;
     launch::launch_game(&game).map_err(user_err)?;
+    game_watch::maybe_hide_while_playing(&app, &state, &game);
     Ok(game)
 }
 
@@ -167,8 +171,8 @@ pub fn get_settings(state: State<AppState>) -> Result<AppSettings, String> {
 pub fn save_settings(state: State<AppState>, settings: AppSettings) -> Result<(), String> {
     with_db(&state, |db| db.save_settings(&settings))?;
     let start = settings.start_with_windows.unwrap_or(false);
-    let background = settings.start_in_background.unwrap_or(false);
-    launch::set_start_with_windows(start, background).map_err(user_err)?;
+    // Always start visible; tray/background is no longer a separate setting.
+    launch::set_start_with_windows(start, false).map_err(user_err)?;
     Ok(())
 }
 
@@ -176,10 +180,12 @@ pub fn save_settings(state: State<AppState>, settings: AppSettings) -> Result<()
 pub fn library_stats(state: State<AppState>) -> Result<LibraryStats, String> {
     with_db(&state, |db| {
         let games = db.list_games(true)?;
+        let visible: Vec<_> = games.iter().filter(|g| !g.hidden).collect();
         Ok(LibraryStats {
-            total: games.iter().filter(|g| !g.hidden).count(),
-            favorites: games.iter().filter(|g| g.favorite && !g.hidden).count(),
-            missing: games.iter().filter(|g| g.missing && !g.hidden).count(),
+            total: visible.len(),
+            favorites: visible.iter().filter(|g| g.favorite).count(),
+            missing: visible.iter().filter(|g| g.missing).count(),
+            total_playtime_minutes: visible.iter().map(|g| g.playtime_minutes).sum(),
         })
     })
 }
@@ -193,6 +199,7 @@ struct CoverUpdatedPayload {
     cover_url: Option<String>,
     genre: Option<String>,
     logo_path: Option<String>,
+    cover_source: Option<String>,
 }
 
 static COVER_FETCH_RUNNING: AtomicBool = AtomicBool::new(false);
@@ -211,7 +218,7 @@ pub fn fetch_covers(
         let mut games = db.list_games(true)?;
         let attached = covers::reattach_local_covers(&mut games, |id, path| {
             if let Some(p) = path {
-                let _ = db.set_cover(id, None, Some(p));
+                let _ = db.set_cover(id, None, Some(p), None);
             } else {
                 let _ = db.clear_cover_path(id);
             }
@@ -230,6 +237,7 @@ pub fn fetch_covers(
                 cover_url: None,
                 genre: None,
                 logo_path: None,
+                cover_source: None,
             },
         );
     }
@@ -288,13 +296,18 @@ pub fn fetch_covers(
                 };
                 let has_file = !fetched.path.is_empty() && std::path::Path::new(&fetched.path).exists();
                 if has_file {
-                    let _ = db.set_cover(&game.id, None, Some(&fetched.path));
+                    let _ = db.set_cover(
+                        &game.id,
+                        None,
+                        Some(&fetched.path),
+                        fetched.source.as_deref(),
+                    );
                 } else if let Some(steam_id) = fetched.steam_app_id.as_ref().or(game.steam_app_id.as_ref())
                 {
                     let cdn = format!(
                         "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{steam_id}/library_600x900.jpg"
                     );
-                    let _ = db.set_cover(&game.id, Some(&cdn), None);
+                    let _ = db.set_cover(&game.id, Some(&cdn), None, Some("Steam"));
                 }
                 if let Some(steam_id) = &fetched.steam_app_id {
                     let _ = db.set_steam_app_id(&game.id, steam_id);
@@ -318,6 +331,7 @@ pub fn fetch_covers(
                         cover_url: None,
                         genre: fetched.genre,
                         logo_path: None,
+                        cover_source: fetched.source,
                     },
                 );
             }
@@ -343,7 +357,7 @@ pub fn set_game_name(state: State<AppState>, id: String, name: String) -> Result
 pub fn set_custom_cover(state: State<AppState>, id: String, path: String) -> Result<Game, String> {
     let dest = covers::import_cover_file(&id, &path).map_err(user_err)?;
     with_db(&state, |db| {
-        db.set_cover(&id, None, Some(&dest))?;
+        db.set_cover(&id, None, Some(&dest), Some("Custom"))?;
         db.get_game(&id)?
             .ok_or_else(|| anyhow::anyhow!("game not found"))
     })
@@ -390,7 +404,7 @@ pub fn choose_cover(state: State<AppState>, id: String, path: String) -> Result<
         if !std::path::Path::new(&path).is_file() {
             anyhow::bail!("Cover file not found");
         }
-        db.set_cover(&id, None, Some(&path))?;
+        db.set_cover(&id, None, Some(&path), Some("Local"))?;
         db.get_game(&id)?
             .ok_or_else(|| anyhow::anyhow!("game not found"))
     })
@@ -569,6 +583,7 @@ pub fn get_logo_data_urls(
 
 #[tauri::command]
 pub fn launch_action(
+    app: AppHandle,
     state: State<AppState>,
     id: String,
     action: String,
@@ -584,6 +599,7 @@ pub fn launch_action(
                 Ok(())
             })?;
             launch::launch_game(&game).map_err(user_err)?;
+            game_watch::maybe_hide_while_playing(&app, &state, &game);
         }
         "save_folder" => {
             let path = game

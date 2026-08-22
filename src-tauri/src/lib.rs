@@ -1,7 +1,9 @@
 mod backup;
 mod commands;
+mod console;
 mod covers;
 mod db;
+mod game_watch;
 mod launch;
 mod metadata;
 mod models;
@@ -83,6 +85,7 @@ pub fn run() {
         })
         .manage(AppState {
             db: Mutex::new(database),
+            hide_watch_gen: std::sync::atomic::AtomicU64::new(0),
         })
         .invoke_handler(tauri::generate_handler![
             commands::list_games,
@@ -137,6 +140,11 @@ pub fn run() {
             commands::reset_all_art,
             commands::reset_all_stats,
             commands::reset_app,
+            console::explorer_places,
+            console::list_explorer,
+            console::open_explorer,
+            console::open_path,
+            console::system_power,
         ])
         .setup(move |app| {
             let handle = app.handle().clone();

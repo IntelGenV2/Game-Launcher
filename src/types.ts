@@ -54,6 +54,7 @@ export interface Game {
   installPath: string | null;
   coverUrl: string | null;
   coverPath: string | null;
+  coverSource?: string | null;
   favorite: boolean;
   hidden: boolean;
   missing: boolean;
@@ -119,12 +120,14 @@ export interface AppSettings {
   startWithWindows: boolean | null;
   closeToTray: boolean | null;
   startInBackground: boolean | null;
+  hideOnGameLaunch: boolean | null;
 }
 
 export interface LibraryStats {
   total: number;
   favorites: number;
   missing: number;
+  totalPlaytimeMinutes: number;
 }
 
 export interface TopPlayedGame {
@@ -450,6 +453,27 @@ export function formatPlaytime(minutes: number): string {
   const m = minutes % 60;
   if (h < 100) return m > 0 ? `${h}h ${m}m` : `${h}h`;
   return `${h}h`;
+}
+
+/** Where cover art came from (Steam, SteamGridDB, custom, …). */
+export function coverSourceLabel(game: Game): string | null {
+  const stored = game.coverSource?.trim();
+  if (stored) return stored;
+  const url = (game.coverUrl ?? "").toLowerCase();
+  if (url.includes("steamstatic") || url.includes("steamcdn") || url.includes("steamcommunity")) {
+    return "Steam";
+  }
+  if (url.includes("steamgriddb")) return "SteamGridDB";
+  if (url.includes("wikipedia") || url.includes("wikimedia")) return "Wikipedia";
+  if (url.includes("epicgames")) return "Epic";
+  if (url.includes("xboxlive") || url.includes("microsoft.com")) return "Xbox";
+  if (url.includes("roblox")) return "Roblox";
+  if (!game.coverPath && !game.coverUrl) return null;
+  if (game.steamAppId || game.store === "steam") return "Steam";
+  if (game.store === "epic") return "Epic";
+  if (game.store === "xbox") return "Xbox";
+  if (game.store === "roblox") return "Roblox";
+  return "Cached";
 }
 
 export function formatLastPlayed(iso: string | null): string {

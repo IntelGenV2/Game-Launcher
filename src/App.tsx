@@ -4,6 +4,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AddToGroupModal } from "./components/AddToGroupModal";
+import { BigPicture } from "./components/BigPicture";
 import { BulkAddToGroupModal } from "./components/BulkAddToGroupModal";
 import { CoverPickModal } from "./components/CoverPickModal";
 import { FlyCover, type FlyOrigin } from "./components/FlyCover";
@@ -31,6 +32,7 @@ import {
   GameGroup,
   gameOrderKey,
   groupOrderKey,
+  formatPlaytime,
   isSortMode,
   LibraryFilter,
   LibraryOverview,
@@ -58,6 +60,7 @@ type CoverUpdatedPayload = {
   coverUrl: string | null;
   genre: string | null;
   logoPath: string | null;
+  coverSource: string | null;
 };
 
 function coverPickSignature(group: CoverChoiceGroup): string {
@@ -118,8 +121,14 @@ function App() {
     startWithWindows: false,
     closeToTray: false,
     startInBackground: false,
+    hideOnGameLaunch: false,
   });
-  const [stats, setStats] = useState<LibraryStats>({ total: 0, favorites: 0, missing: 0 });
+  const [stats, setStats] = useState<LibraryStats>({
+    total: 0,
+    favorites: 0,
+    missing: 0,
+    totalPlaytimeMinutes: 0,
+  });
   const [coverMap, setCoverMap] = useState<Record<string, string>>({});
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [groups, setGroups] = useState<GameGroup[]>([]);
@@ -306,6 +315,7 @@ function App() {
             coverUrl: p.coverUrl ?? g.coverUrl,
             genre: p.genre ?? g.genre,
             logoPath: p.logoPath ?? g.logoPath,
+            coverSource: p.coverSource ?? g.coverSource,
           };
         });
       });
@@ -814,15 +824,17 @@ function App() {
     const win = getCurrentWindow();
     const next = !bigPicture;
     setBigPicture(next);
+    if (next) {
+      setSettingsOpen(false);
+      setSystemOpen(false);
+      setMainView("library");
+      setSelectedId(null);
+      setNavActive(false);
+    }
     try {
       await win.setFullscreen(next);
     } catch {
       /* ignore */
-    }
-    if (next) {
-      setMainView("library");
-      setSelectedId(null);
-      setNavActive(true);
     }
   }
 
@@ -1092,6 +1104,7 @@ function App() {
 
   const handlePadAction = useCallback(
     (action: PadAction) => {
+      if (bigPicture) return;
       if (modalOpen) {
         if (action === "back") {
           setSettingsOpen(false);
@@ -1150,10 +1163,11 @@ function App() {
       query,
       games,
       toggleSelectMode,
+      bigPicture,
     ],
   );
 
-  const gamepadConnected = useGamepad(handlePadAction, !loading);
+  const gamepadConnected = useGamepad(handlePadAction, !loading && !bigPicture);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -1169,6 +1183,8 @@ function App() {
         return;
       }
 
+      if (bigPicture) return;
+
       if (e.key === "Escape") {
         e.preventDefault();
         if (addMenuOpen) {
@@ -1183,10 +1199,6 @@ function App() {
           setSelectedId(null);
           setFly(null);
           setFlyDone(true);
-          return;
-        }
-        if (bigPicture) {
-          void toggleBigPicture();
           return;
         }
         if (selectMode) {
@@ -1259,6 +1271,7 @@ function App() {
     toggleSelectMode,
     moveFocus,
     activateFocus,
+    bigPicture,
   ]);
 
   useEffect(() => {
@@ -1351,7 +1364,8 @@ function App() {
               setSelectedId(null);
             }}
           >
-            Library
+            <span className="sidebar-btn-label">Library</span>
+            {!loading && <span className="sidebar-btn-meta">{stats.total}</span>}
           </button>
           <button
             type="button"
@@ -1362,7 +1376,14 @@ function App() {
               setMainView("stats");
             }}
           >
-            Stats
+            <span className="sidebar-btn-label">Stats</span>
+            {!loading && (
+              <span className="sidebar-btn-meta">
+                {stats.totalPlaytimeMinutes > 0
+                  ? formatPlaytime(stats.totalPlaytimeMinutes)
+                  : "0h"}
+              </span>
+            )}
           </button>
         </nav>
         <div className="sidebar-foot">
@@ -1556,22 +1577,15 @@ function App() {
             data-library-hidden={selectedGame || mainView !== "library" ? "true" : undefined}
             hidden={!!selectedGame || mainView !== "library"}
           >
-              <div className="status-bar">
-                <div>
-                  {loading || scanning ? (
-                    <span className="loading-pulse">
-                      <span className="dot" />
-                      {scanning ? "Scanning libraries..." : "Loading library..."}
-                    </span>
-                  ) : (
-                    <span>
-                      Showing {filtered.length} of {stats.total}
-                      {stats.favorites > 0 ? ` · ${stats.favorites} favorites` : ""}
-                      {stats.missing > 0 ? ` · ${stats.missing} missing` : ""}
-                    </span>
-                  )}
+              {(loading || scanning) && (
+                <div
+                  className="scan-bar"
+                  role="status"
+                  aria-label={scanning ? "Scanning libraries" : "Loading library"}
+                >
+                  <span />
                 </div>
-              </div>
+              )}
 
               {!loading && games.length === 0 ? (
                 <div className="empty empty-filter">
@@ -1704,7 +1718,7 @@ function App() {
         </div>
       )}
 
-      {gamepadConnected && !selectedGame && !modalOpen && (
+      {gamepadConnected && !selectedGame && !modalOpen && !bigPicture && (
         <div className="gamepad-hint" aria-hidden>
           <span>D-pad move</span>
           <span>A open</span>
@@ -1724,7 +1738,7 @@ function App() {
         />
       )}
 
-      {coverPickQueue[0] && !settingsOpen && !mergeOpen && !selectedId && (
+      {coverPickQueue[0] && !settingsOpen && !mergeOpen && !selectedId && !bigPicture && (
         <CoverPickModal
           group={coverPickQueue[0]}
           index={0}
@@ -1820,6 +1834,22 @@ function App() {
       />
 
       <SystemPage open={systemOpen} onClose={() => setSystemOpen(false)} />
+
+      {bigPicture && (
+        <BigPicture
+          games={games.filter((g) => !g.hidden)}
+          groups={groups}
+          coverMap={coverMap}
+          libraryOrder={libraryOrder}
+          reduceMotion={settings.reduceMotion === true}
+          onLaunch={handleLaunch}
+          onToggleFavorite={handleToggleFavorite}
+          onOpenFolder={handleOpenFolder}
+          onOpenSaveFolder={handleOpenSaveFolder}
+          onExit={() => void toggleBigPicture()}
+          onToast={showToast}
+        />
+      )}
 
       <SettingsModal
         open={settingsOpen}

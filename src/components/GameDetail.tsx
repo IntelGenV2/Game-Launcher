@@ -8,6 +8,7 @@ import {
   GameStats,
   STORE_LABELS,
   Store,
+  coverSourceLabel,
   formatLastPlayed,
   formatPlaytime,
   localCoverUrl,
@@ -93,8 +94,12 @@ export function GameDetail({
           launchArgs: full.launchArgs ?? game.launchArgs,
           workingDir: full.workingDir ?? game.workingDir,
           saveFolder: full.saveFolder ?? game.saveFolder,
+          coverSource: full.coverSource ?? game.coverSource,
+          coverPath: game.coverPath ?? full.coverPath,
+          coverUrl: game.coverUrl ?? full.coverUrl,
         }
       : game;
+  const artSource = coverSourceLabel(view);
   const pathLabel = pathLabelFor(view);
   const genres = view.genres?.length
     ? view.genres
@@ -453,21 +458,24 @@ export function GameDetail({
       </button>
 
       <div className="detail-hero">
-        <div className={`detail-cover${coverHidden ? " fly-hidden" : ""}`}>
-          <CoverImg
-            game={game}
-            override={coverDataUrl}
-            fallbackClassName="cover-fallback large"
-            loading="eager"
-          />
-          <button
-            type="button"
-            className="play-btn detail-play"
-            disabled={game.missing}
-            onClick={() => onLaunch(game)}
-          >
-            ▶
-          </button>
+        <div className="detail-cover-col">
+          <div className={`detail-cover${coverHidden ? " fly-hidden" : ""}`}>
+            <CoverImg
+              game={game}
+              override={coverDataUrl}
+              fallbackClassName="cover-fallback large"
+              loading="eager"
+            />
+            <button
+              type="button"
+              className="play-btn detail-play"
+              disabled={game.missing}
+              onClick={() => onLaunch(game)}
+            >
+              ▶
+            </button>
+          </div>
+          {artSource ? <p className="cover-source">Art from {artSource}</p> : null}
         </div>
 
         <div className="detail-info">

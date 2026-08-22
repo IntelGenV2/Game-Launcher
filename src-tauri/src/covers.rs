@@ -4,7 +4,7 @@ use anyhow::Result;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::SystemTime;
 
 /// Reject oversized images so cover fetch / folder scans cannot OOM the process.
@@ -15,6 +15,7 @@ pub struct CoverFetch {
     pub path: String,
     pub steam_app_id: Option<String>,
     pub genre: Option<String>,
+    pub source: Option<String>,
 }
 
 /// Cover selection rules (always enforced):
@@ -41,6 +42,7 @@ pub fn ensure_cover(game: &Game, api_key: Option<&str>) -> Result<Option<CoverFe
                 path: path.clone(),
                 steam_app_id: resolved_steam.filter(|_| game.steam_app_id.is_none()),
                 genre,
+                source: game.cover_source.clone(),
             }));
         }
     }
@@ -58,18 +60,29 @@ pub fn ensure_cover(game: &Game, api_key: Option<&str>) -> Result<Option<CoverFe
         } else {
             None
         };
+        let source = game
+            .cover_source
+            .clone()
+            .unwrap_or_else(|| "Cached".to_string());
         return Ok(Some(done(
             game,
             &path,
             resolved_steam.filter(|_| game.steam_app_id.is_none()),
             genre,
+            &source,
         )));
     }
 
     // Unnamed images next to the game (manual installs, GOG, etc.) — copy in as {gameId}.ext
     if let Some(path) = import_folder_cover(game) {
         let genre = fetch_genre_if_needed(game, &mut resolved_steam, need_genre);
-        return Ok(Some(done(game, &path, resolved_steam.clone(), genre)));
+        return Ok(Some(done(
+            game,
+            &path,
+            resolved_steam.clone(),
+            genre,
+            "Install folder",
+        )));
     }
 
     let dest = cover_dest_for(&game.id, "jpg");
@@ -80,7 +93,7 @@ pub fn ensure_cover(game: &Game, api_key: Option<&str>) -> Result<Option<CoverFe
     if let Some(app_id) = resolve_steam_id(game, &mut resolved_steam) {
         if copy_steam_library_cache(&app_id, &dest) {
             let genre = fetch_genre_if_needed(game, &mut resolved_steam, need_genre);
-            return Ok(Some(done(game, &dest, resolved_steam.clone(), genre)));
+            return Ok(Some(done(game, &dest, resolved_steam.clone(), genre, "Steam")));
         }
     }
 
@@ -88,7 +101,8 @@ pub fn ensure_cover(game: &Game, api_key: Option<&str>) -> Result<Option<CoverFe
     if let Some(url) = &game.cover_url {
         if is_box_art_url(url) && try_save_cover(url, &dest) {
             let genre = fetch_genre_if_needed(game, &mut resolved_steam, need_genre);
-            return Ok(Some(done(game, &dest, resolved_steam.clone(), genre)));
+            let source = infer_source_from_url(url).unwrap_or("Remote");
+            return Ok(Some(done(game, &dest, resolved_steam.clone(), genre, source)));
         }
     }
 
@@ -99,7 +113,7 @@ pub fn ensure_cover(game: &Game, api_key: Option<&str>) -> Result<Option<CoverFe
         for url in urls {
             if try_save_cover(&url, &dest) {
                 let genre = fetch_genre_if_needed(game, &mut resolved_steam, need_genre);
-                return Ok(Some(done(game, &dest, resolved_steam.clone(), genre)));
+                return Ok(Some(done(game, &dest, resolved_steam.clone(), genre, "Steam")));
             }
         }
     }
@@ -112,7 +126,7 @@ pub fn ensure_cover(game: &Game, api_key: Option<&str>) -> Result<Option<CoverFe
         if let Ok(Some(url)) = epic_product_cover(&game.name, &game.launch_target) {
             if try_save_cover(&url, &dest) {
                 let genre = fetch_genre_if_needed(game, &mut resolved_steam, need_genre);
-                return Ok(Some(done(game, &dest, resolved_steam.clone(), genre)));
+                return Ok(Some(done(game, &dest, resolved_steam.clone(), genre, "Epic")));
             }
         }
     }
@@ -123,7 +137,7 @@ pub fn ensure_cover(game: &Game, api_key: Option<&str>) -> Result<Option<CoverFe
             if let Ok(Some(url)) = microsoft_store_cover(n) {
                 if try_save_cover(&url, &dest) {
                     let genre = fetch_genre_if_needed(game, &mut resolved_steam, need_genre);
-                    return Ok(Some(done(game, &dest, resolved_steam.clone(), genre)));
+                    return Ok(Some(done(game, &dest, resolved_steam.clone(), genre, "Xbox")));
                 }
             }
         }
@@ -135,7 +149,13 @@ pub fn ensure_cover(game: &Game, api_key: Option<&str>) -> Result<Option<CoverFe
             if let Ok(Some(url)) = steamgriddb_cover(n, key) {
                 if try_save_cover(&url, &dest) {
                     let genre = fetch_genre_if_needed(game, &mut resolved_steam, need_genre);
-                    return Ok(Some(done(game, &dest, resolved_steam.clone(), genre)));
+                    return Ok(Some(done(
+                        game,
+                        &dest,
+                        resolved_steam.clone(),
+                        genre,
+                        "SteamGridDB",
+                    )));
                 }
             }
         }
@@ -146,7 +166,13 @@ pub fn ensure_cover(game: &Game, api_key: Option<&str>) -> Result<Option<CoverFe
         if let Ok(Some(url)) = wikipedia_cover(n) {
             if is_box_art_url(&url) && try_save_cover(&url, &dest) {
                 let genre = fetch_genre_if_needed(game, &mut resolved_steam, need_genre);
-                return Ok(Some(done(game, &dest, resolved_steam.clone(), genre)));
+                return Ok(Some(done(
+                    game,
+                    &dest,
+                    resolved_steam.clone(),
+                    genre,
+                    "Wikipedia",
+                )));
             }
         }
     }
@@ -156,7 +182,7 @@ pub fn ensure_cover(game: &Game, api_key: Option<&str>) -> Result<Option<CoverFe
         for url in roblox_cover_urls() {
             if try_save_cover(url, &dest) {
                 let genre = fetch_genre_if_needed(game, &mut resolved_steam, need_genre);
-                return Ok(Some(done(game, &dest, resolved_steam.clone(), genre)));
+                return Ok(Some(done(game, &dest, resolved_steam.clone(), genre, "Roblox")));
             }
         }
     }
@@ -169,6 +195,7 @@ pub fn ensure_cover(game: &Game, api_key: Option<&str>) -> Result<Option<CoverFe
             path: String::new(),
             steam_app_id,
             genre,
+            source: None,
         }));
     }
 
@@ -258,12 +285,38 @@ fn fetch_genre_if_needed(
     resolve_steam_id(game, resolved).and_then(|id| steam_app_genres(&id).ok().flatten())
 }
 
-fn done(game: &Game, dest: &Path, steam_app_id: Option<String>, genre: Option<String>) -> CoverFetch {
+fn done(
+    game: &Game,
+    dest: &Path,
+    steam_app_id: Option<String>,
+    genre: Option<String>,
+    source: &str,
+) -> CoverFetch {
     purge_landscape_covers_for(game);
     CoverFetch {
         path: dest.to_string_lossy().to_string(),
         steam_app_id,
         genre,
+        source: Some(source.to_string()),
+    }
+}
+
+fn infer_source_from_url(url: &str) -> Option<&'static str> {
+    let u = url.to_lowercase();
+    if u.contains("steamstatic") || u.contains("steamcdn") || u.contains("steamcommunity") {
+        Some("Steam")
+    } else if u.contains("steamgriddb") {
+        Some("SteamGridDB")
+    } else if u.contains("wikipedia") || u.contains("wikimedia") {
+        Some("Wikipedia")
+    } else if u.contains("epicgames") || u.contains("akamaihd.net/item") {
+        Some("Epic")
+    } else if u.contains("xboxlive") || u.contains("microsoft.com") {
+        Some("Xbox")
+    } else if u.contains("roblox") {
+        Some("Roblox")
+    } else {
+        None
     }
 }
 
@@ -716,7 +769,7 @@ pub fn cover_file_present(path: &str) -> bool {
 
 pub fn is_portrait_cover_path(path: &str) -> bool {
     let want = PathBuf::from(path);
-    for file in cover_catalog() {
+    for file in cover_catalog().iter() {
         if file.path == want {
             return file.score != i32::MIN;
         }
@@ -738,7 +791,7 @@ fn is_known_landscape_file(path: &Path) -> bool {
 pub fn purge_landscape_covers_for(game: &Game) {
     let wanted = game_cover_keys(game);
     let mut removed = false;
-    for file in cover_catalog() {
+    for file in cover_catalog().iter() {
         if !file.keys.iter().any(|k| wanted.iter().any(|w| w == k)) {
             continue;
         }
@@ -825,8 +878,8 @@ struct IndexedCover {
     score: i32,
 }
 
-fn catalog_lock() -> &'static Mutex<Option<(u64, Vec<IndexedCover>)>> {
-    static CATALOG: OnceLock<Mutex<Option<(u64, Vec<IndexedCover>)>>> = OnceLock::new();
+fn catalog_lock() -> &'static Mutex<Option<(u64, Arc<Vec<IndexedCover>>)>> {
+    static CATALOG: OnceLock<Mutex<Option<(u64, Arc<Vec<IndexedCover>>)>>> = OnceLock::new();
     CATALOG.get_or_init(|| Mutex::new(None))
 }
 
@@ -860,19 +913,19 @@ fn covers_dir_stamp() -> u64 {
     n.wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(mix)
 }
 
-fn cover_catalog() -> Vec<IndexedCover> {
+fn cover_catalog() -> Arc<Vec<IndexedCover>> {
     let stamp = covers_dir_stamp();
     if let Ok(mut slot) = catalog_lock().lock() {
         if let Some((s, files)) = slot.as_ref() {
             if *s == stamp {
-                return files.clone();
+                return Arc::clone(files);
             }
         }
-        let files = scan_cover_catalog();
-        *slot = Some((stamp, files.clone()));
+        let files = Arc::new(scan_cover_catalog());
+        *slot = Some((stamp, Arc::clone(&files)));
         return files;
     }
-    scan_cover_catalog()
+    Arc::new(scan_cover_catalog())
 }
 
 fn scan_cover_catalog() -> Vec<IndexedCover> {
@@ -1015,7 +1068,7 @@ fn catalog_path_is_portrait(files: &[IndexedCover], path: &str) -> bool {
 fn purge_all_landscape_covers() {
     let files = cover_catalog();
     let mut removed = false;
-    for file in &files {
+    for file in files.iter() {
         if is_known_landscape_file(&file.path) {
             let _ = fs::remove_file(&file.path);
             removed = true;
@@ -1226,11 +1279,17 @@ fn import_folder_cover(game: &Game) -> Option<PathBuf> {
     Some(dest)
 }
 
-fn client() -> Result<reqwest::blocking::Client> {
-    Ok(reqwest::blocking::Client::builder()
+fn client() -> Result<&'static reqwest::blocking::Client> {
+    static CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
+    if let Some(c) = CLIENT.get() {
+        return Ok(c);
+    }
+    let built = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(25))
         .user_agent("IntelGenGameLauncher/0.2 (cover-fetch)")
-        .build()?)
+        .build()?;
+    let _ = CLIENT.set(built);
+    Ok(CLIENT.get().expect("cover http client"))
 }
 
 fn download_bytes(url: &str) -> Result<Vec<u8>> {

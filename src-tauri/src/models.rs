@@ -73,6 +73,8 @@ pub struct Game {
     pub install_path: Option<String>,
     pub cover_url: Option<String>,
     pub cover_path: Option<String>,
+    #[serde(default)]
+    pub cover_source: Option<String>,
     pub favorite: bool,
     pub hidden: bool,
     pub missing: bool,
@@ -149,6 +151,8 @@ pub struct AppSettings {
     pub start_with_windows: Option<bool>,
     pub close_to_tray: Option<bool>,
     pub start_in_background: Option<bool>,
+    /// Hide the main window while a game is running; show again when it exits.
+    pub hide_on_game_launch: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -157,6 +161,7 @@ pub struct LibraryStats {
     pub total: usize,
     pub favorites: usize,
     pub missing: usize,
+    pub total_playtime_minutes: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

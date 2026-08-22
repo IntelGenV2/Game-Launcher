@@ -72,7 +72,7 @@ export function SettingsModal({
   const [reduceMotion, setReduceMotion] = useState(false);
   const [startWithWindows, setStartWithWindows] = useState(false);
   const [closeToTray, setCloseToTray] = useState(false);
-  const [startInBackground, setStartInBackground] = useState(false);
+  const [hideOnGameLaunch, setHideOnGameLaunch] = useState(false);
   const [saving, setSaving] = useState(false);
   const [appVersion, setAppVersion] = useState<string>("…");
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({ kind: "idle" });
@@ -106,7 +106,7 @@ export function SettingsModal({
     setReduceMotion(a.reduceMotion === true);
     setStartWithWindows(s.startWithWindows === true);
     setCloseToTray(s.closeToTray === true);
-    setStartInBackground(s.startInBackground === true);
+    setHideOnGameLaunch(s.hideOnGameLaunch === true);
     setSysMsg(null);
   }
 
@@ -341,14 +341,14 @@ export function SettingsModal({
             {section === "library" && (
               <>
                 <div className="field">
-                  <label>Backup</label>
+                  <label>Export</label>
                   <button
                     type="button"
                     className="btn"
                     disabled={!!sysBusy}
                     onClick={async () => {
                       const dest = await save({
-                        defaultPath: "IntelLauncher-backup.zip",
+                        defaultPath: "IntelLauncher-export.zip",
                         filters: [{ name: "Zip", extensions: ["zip"] }],
                       });
                       if (!dest || typeof dest !== "string") return;
@@ -356,7 +356,7 @@ export function SettingsModal({
                       setSysMsg(null);
                       try {
                         await invoke("export_backup", { dest });
-                        setSysMsg("Backup saved.");
+                        setSysMsg("Export saved.");
                       } catch (e) {
                         setSysMsg(String(e));
                       } finally {
@@ -460,28 +460,9 @@ export function SettingsModal({
                     <input
                       type="checkbox"
                       checked={startWithWindows}
-                      onChange={(e) => {
-                        const on = e.target.checked;
-                        setStartWithWindows(on);
-                        if (on) {
-                          setStartInBackground(true);
-                          setCloseToTray(true);
-                        }
-                      }}
+                      onChange={(e) => setStartWithWindows(e.target.checked)}
                     />
                     Start with Windows
-                  </label>
-                  <label className="toggle-row">
-                    <input
-                      type="checkbox"
-                      checked={startInBackground}
-                      onChange={(e) => {
-                        const on = e.target.checked;
-                        setStartInBackground(on);
-                        if (on) setCloseToTray(true);
-                      }}
-                    />
-                    Start in background (tray)
                   </label>
                   <label className="toggle-row">
                     <input
@@ -490,6 +471,14 @@ export function SettingsModal({
                       onChange={(e) => setCloseToTray(e.target.checked)}
                     />
                     Close to tray instead of quitting
+                  </label>
+                  <label className="toggle-row">
+                    <input
+                      type="checkbox"
+                      checked={hideOnGameLaunch}
+                      onChange={(e) => setHideOnGameLaunch(e.target.checked)}
+                    />
+                    Hide launcher while playing
                   </label>
                 </div>
               </>
@@ -669,7 +658,8 @@ export function SettingsModal({
                   reduceMotion,
                   startWithWindows,
                   closeToTray,
-                  startInBackground,
+                  startInBackground: false,
+                  hideOnGameLaunch,
                 });
                 onClose();
               } finally {
