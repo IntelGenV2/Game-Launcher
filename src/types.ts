@@ -317,6 +317,13 @@ export function groupOrderKey(id: string) {
   return `group:${id}`;
 }
 
+/** Stable per-group accent so stacked folders and in-group tiles share a color. */
+export function groupAccent(id: string): string {
+  let h = 0;
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
+  return `hsl(${h % 360} 62% 52%)`;
+}
+
 export function parseLibraryOrder(raw: string | null | undefined): string[] {
   if (!raw) return [];
   try {

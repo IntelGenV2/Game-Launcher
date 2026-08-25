@@ -1,7 +1,7 @@
 {
   "name": "intelgen-game-launcher",
   "private": true,
-  "version": "0.3.4",
+  "version": "0.3.5",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -29,5 +29,5 @@
     "typescript": "~5.8.3",
     "vite": "^7.0.4"
   },
-  "description": "IntelGen Game Launcher"
+  "description": "Windows game launcher with a cover library, store scanning, groups, and Big Picture couch mode."
 }

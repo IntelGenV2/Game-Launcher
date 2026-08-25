@@ -8,12 +8,37 @@ Repo: [IntelGenV2/Game-Launcher](https://github.com/IntelGenV2/Game-Launcher)
 
 - Scans the stores you already have installed and lists those games in one place
 - Launch from cover art (usually through the store client — same idea as Playnite)
-- Groups, bulk select, keyboard + controller navigation
+- Groups with a fanned cover stack; each grouped cover keeps that group’s color border
+- Bulk select, keyboard + controller navigation
+- **Big Picture** — fullscreen, controller-first couch mode
 - Favorites, hide, custom sort order
 - Playtime for sessions started here; Steam local playtime is imported when available
 - Cover art from Steam / Epic / Xbox catalog / Wikipedia / optional SteamGridDB key
 - Themes and grid customization in Settings
 - Auto-update from GitHub Releases
+
+## Big Picture
+
+Sidebar → **Big Picture** (goes fullscreen). Built for a gamepad first; keyboard still works.
+
+**Sections** (left rail, or **LB / RB** / **Q / E**): Library, Files, Stats, System.
+
+**Library** is a wrapping 3D cover wheel. Groups show as a fanned stack of covers. **A** / Enter opens a group (covers slide out of the fan onto the wheel). **B** / Esc slides them back in; the rest of the library slides back into place. Ungrouped games sit on the same wheel.
+
+**System** can sleep, lock, restart, or shut down the PC after a confirm. Cancel is the default.
+
+| Control | Gamepad | Keyboard |
+| --- | --- | --- |
+| Move | D-pad / left stick | Arrows |
+| Play / open / select | A | Enter |
+| Back / close group | B | Esc |
+| Game info | X | — |
+| Browse (filter / sort) | Y | Y |
+| Cycle sections | LB / RB | Q / E |
+| System | Start | — |
+| Rail | Up from the list, then left / right | Up, then left / right |
+
+Desktop library still uses D-pad to move, A to open, B back, X favorite, View for select mode.
 
 ## How scanning works
 
@@ -67,6 +92,26 @@ npm run tauri dev
 npm install
 npm run tauri build
 ```
+
+Installer is NSIS (`lzma`). For a signed build the in-app updater can use, see **Releasing**.
+
+## Releasing
+
+GitHub Actions **Release** (`.github/workflows/release.yml`) runs on `v*` tags and `workflow_dispatch`. It checks out **that git commit**, then `tauri-apps/tauri-action` builds it. Local uncommitted files are not in the installer.
+
+Push every file the tag needs **before** tagging (frontend + `src-tauri` + workflow). A tag on an old `main` will ship old code even if your working tree is newer.
+
+Repo secret required: `TAURI_SIGNING_PRIVATE_KEY` (full contents of `%USERPROFILE%\.tauri\intelgen-game-launcher.key`).
+
+Local alternative:
+
+```powershell
+.\scripts\release.ps1 -Version 0.3.5 -Notes "Short release notes"
+```
+
+That bumps `package.json`, `src-tauri/tauri.conf.json`, and `src-tauri/Cargo.toml`, signed-builds, and writes `release-assets\` (installer, `.sig`, `latest.json`, optional portable zip). Upload those to a GitHub Release tagged `v0.3.5`. The app checks:
+
+`https://github.com/IntelGenV2/Game-Launcher/releases/latest/download/latest.json`
 
 ## Cover art
 

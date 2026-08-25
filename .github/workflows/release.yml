@@ -62,7 +62,7 @@ jobs:
         with:
           tagName: v__VERSION__
           releaseName: "IntelGen Game Launcher v__VERSION__"
-          releaseBody: "Download the Windows installer from the assets below."
+          releaseBody: "Download the Windows installer from the assets below. See CHANGELOG.md in the repo for what changed."
           releaseDraft: true
           prerelease: false
           includeUpdaterJson: true

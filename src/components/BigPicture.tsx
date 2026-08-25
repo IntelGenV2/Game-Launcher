@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { isTypingTarget, useGamepad, type PadAction } from "../hooks/useGamepad";
 import {
   isBpMuted,
@@ -29,6 +29,7 @@ import {
   formatLastPlayed,
   formatPlaytime,
   gameOrderKey,
+  groupAccent,
   neverPlayed,
 } from "../types";
 import { BarChart } from "./Charts";
@@ -37,7 +38,7 @@ import type { SystemInfo } from "./SystemPage";
 
 type Screen = "library" | "explorer" | "stats" | "system";
 type Zone = "tabs" | "stage" | "list";
-type ConfirmKind = "restart" | "shutdown" | "exit";
+type ConfirmKind = "restart" | "shutdown" | "exit" | "sleep" | "lock";
 type GameTab = "overview" | "sessions";
 type StripItem =
   | { kind: "folder"; id: string; group: GameGroup; members: Game[] }
@@ -71,7 +72,8 @@ const BP_FILTERS = [...QUICK_FILTERS, ...STORE_FILTER_OPTIONS.filter((s) => s.id
 const BP_SORTS = SORT_OPTIONS.filter((s) => s.id !== "custom");
 const BOOT_MS = 2400;
 const BOOT_MS_FAST = 360;
-const FLOW_WINDOW = 5;
+const FLOW_WINDOW = 6;
+const WHEEL_STEP = 26;
 
 function clockParts(d: Date) {
   return {
@@ -86,6 +88,35 @@ function formatBytes(bytes: number): string {
   if (gb >= 10) return `${gb.toFixed(0)} GB`;
   if (gb >= 1) return `${gb.toFixed(1)} GB`;
   return `${(bytes / 1024 ** 2).toFixed(0)} MB`;
+}
+
+function wrapOffset(index: number, cursor: number, count: number): number {
+  if (count <= 0) return 0;
+  let off = index - cursor;
+  const half = Math.floor(count / 2);
+  if (off > half) off -= count;
+  if (off < -half) off += count;
+  return off;
+}
+
+function wheelStyle(off: number): CSSProperties {
+  const rad = (off * WHEEL_STEP * Math.PI) / 180;
+  const x = Math.sin(rad) * 38;
+  const z = (Math.cos(rad) - 1) * 320;
+  const scale = off === 0 ? 1.08 : Math.max(0.52, 0.94 - Math.abs(off) * 0.08);
+  return {
+    transform: `translateX(${x}vw) translateY(0px) translateZ(${z}px) rotateY(${-off * WHEEL_STEP}deg) rotate(0deg) scale(${scale})`,
+    opacity: off === 0 ? 1 : Math.max(0.22, 1 - Math.abs(off) * 0.13),
+    zIndex: 50 - Math.abs(off),
+    filter: off === 0 ? "none" : `brightness(${Math.max(0.42, 1 - Math.abs(off) * 0.14)})`,
+  };
+}
+
+function fanVars(index: number): Record<string, string> {
+  const slot = ((index % 3) + 3) % 3;
+  if (slot === 1) return { "--bp-fan-x": "20px", "--bp-fan-y": "-16px", "--bp-fan-rot": "8deg" };
+  if (slot === 2) return { "--bp-fan-x": "-20px", "--bp-fan-y": "-14px", "--bp-fan-rot": "-9deg" };
+  return { "--bp-fan-x": "0px", "--bp-fan-y": "0px", "--bp-fan-rot": "0deg" };
 }
 
 function kindGlyph(kind: string): string {
@@ -204,6 +235,8 @@ export function BigPicture({
   const [libraryFilter, setLibraryFilter] = useState<LibraryFilter>("all");
   const [sortBy, setSortBy] = useState<SortMode>("recent");
   const [openGroupId, setOpenGroupId] = useState<string | null>(null);
+  const [groupMotion, setGroupMotion] = useState<"expand" | "collapse" | "restore" | null>(null);
+  const [restoreGroupId, setRestoreGroupId] = useState<string | null>(null);
   const [places, setPlaces] = useState<ExplorerPlace[]>([]);
   const [listing, setListing] = useState<ExplorerListing | null>(null);
   const [explorerPath, setExplorerPath] = useState<string | null>(null);
@@ -222,6 +255,8 @@ export function BigPicture({
   const listingRef = useRef(listing);
   const gamesRef = useRef(games);
   const openGroupRef = useRef(openGroupId);
+  const groupMotionRef = useRef(groupMotion);
+  const visibleGroupsRef = useRef<{ group: GameGroup; members: Game[] }[]>([]);
   const queryRef = useRef(query);
   const listFocusRef = useRef(listFocus);
   const browseFocusRef = useRef(browseFocus);
@@ -240,6 +275,7 @@ export function BigPicture({
   listingRef.current = listing;
   gamesRef.current = games;
   openGroupRef.current = openGroupId;
+  groupMotionRef.current = groupMotion;
   queryRef.current = query;
   listFocusRef.current = listFocus;
   browseFocusRef.current = browseFocus;
@@ -313,6 +349,7 @@ export function BigPicture({
         .filter((item) => item.members.length > 0),
     [groups, filtered],
   );
+  visibleGroupsRef.current = visibleGroups;
 
   const openGroup = visibleGroups.find((g) => g.group.id === openGroupId) ?? null;
 
@@ -333,6 +370,14 @@ export function BigPicture({
     }
     return items;
   }, [openGroup, visibleGroups, filtered]);
+
+  const rootStripIndex = useCallback(
+    (groupId: string) => {
+      const idx = visibleGroups.findIndex((g) => g.group.id === groupId);
+      return idx < 0 ? 0 : idx;
+    },
+    [visibleGroups],
+  );
 
   stripLenRef.current = strip.length;
   const center = strip[Math.min(cursor, Math.max(0, strip.length - 1))] ?? null;
@@ -465,11 +510,9 @@ export function BigPicture({
   browseKeysRef.current = browseKeys;
 
   useEffect(() => {
-    if (screen === "library") setZone("stage");
-    else {
-      setZone("list");
-      setListFocus(listKeys[0] ?? "place:open");
-    }
+    if (screen !== "library") setListFocus(listKeys[0] ?? "place:open");
+    if (zoneRef.current === "tabs") return;
+    setZone(screen === "library" ? "stage" : "list");
   }, [screen, listKeys]);
 
   const goScreen = useCallback((next: Screen) => {
@@ -484,6 +527,7 @@ export function BigPicture({
     const next = TABS[(i + dir + TABS.length) % TABS.length];
     playMove();
     goScreen(next.id);
+    setZone("tabs");
   }, [goScreen]);
 
   const toggleMute = useCallback(() => {
@@ -494,12 +538,15 @@ export function BigPicture({
   }, []);
 
   const playCentered = useCallback(() => {
+    if (groupMotionRef.current === "collapse" || groupMotionRef.current === "restore") return;
     const item = strip[cursorRef.current];
     if (!item) return;
     if (item.kind === "folder") {
       playConfirm();
       setOpenGroupId(item.group.id);
       setCursor(0);
+      if (!reduceMotion) setGroupMotion("expand");
+      else setGroupMotion(null);
       return;
     }
     if (item.game.missing) {
@@ -509,20 +556,65 @@ export function BigPicture({
     }
     playConfirm();
     onLaunch(item.game);
-  }, [onLaunch, onToast, strip]);
+  }, [onLaunch, onToast, reduceMotion, strip]);
 
   const openCenteredInfo = useCallback(() => {
+    if (groupMotionRef.current === "collapse" || groupMotionRef.current === "restore") return;
     const item = strip[cursorRef.current];
     if (!item) return;
     if (item.kind === "folder") {
       playConfirm();
       setOpenGroupId(item.group.id);
       setCursor(0);
+      if (!reduceMotion) setGroupMotion("expand");
+      else setGroupMotion(null);
       return;
     }
     playConfirm();
     setSelectedId(item.game.id);
-  }, [strip]);
+  }, [reduceMotion, strip]);
+
+  const closeOpenGroup = useCallback(() => {
+    const id = openGroupRef.current;
+    if (!id || groupMotionRef.current === "collapse" || groupMotionRef.current === "restore") return;
+    playBack();
+    if (reduceMotion) {
+      setOpenGroupId(null);
+      setRestoreGroupId(null);
+      setGroupMotion(null);
+      setCursor(rootStripIndex(id));
+      return;
+    }
+    setGroupMotion("collapse");
+  }, [reduceMotion, rootStripIndex]);
+
+  useEffect(() => {
+    if (groupMotion !== "expand") return;
+    const t = window.setTimeout(() => setGroupMotion(null), 580);
+    return () => window.clearTimeout(t);
+  }, [groupMotion]);
+
+  useEffect(() => {
+    if (groupMotion !== "collapse") return;
+    const id = openGroupRef.current;
+    const t = window.setTimeout(() => {
+      const idx = visibleGroupsRef.current.findIndex((g) => g.group.id === id);
+      setRestoreGroupId(id);
+      setOpenGroupId(null);
+      setCursor(idx < 0 ? 0 : idx);
+      setGroupMotion("restore");
+    }, 520);
+    return () => window.clearTimeout(t);
+  }, [groupMotion]);
+
+  useEffect(() => {
+    if (groupMotion !== "restore") return;
+    const t = window.setTimeout(() => {
+      setGroupMotion(null);
+      setRestoreGroupId(null);
+    }, 680);
+    return () => window.clearTimeout(t);
+  }, [groupMotion]);
 
   const activateList = useCallback(
     (key: string) => {
@@ -580,19 +672,15 @@ export function BigPicture({
         return;
       }
       if (key === "power:sleep") {
-        playPower();
-        invoke("system_power", { action: "sleep" }).catch((e) => {
-          playError();
-          onToast(String(e), true);
-        });
+        playConfirm();
+        setConfirm("sleep");
+        setConfirmFocus("confirm:no");
         return;
       }
       if (key === "power:lock") {
-        playPower();
-        invoke("system_power", { action: "lock" }).catch((e) => {
-          playError();
-          onToast(String(e), true);
-        });
+        playConfirm();
+        setConfirm("lock");
+        setConfirmFocus("confirm:no");
         return;
       }
       if (key === "power:restart") {
@@ -683,9 +771,7 @@ export function BigPicture({
       return;
     }
     if (openGroupRef.current) {
-      playBack();
-      setOpenGroupId(null);
-      setCursor(0);
+      closeOpenGroup();
       return;
     }
     if (queryRef.current) {
@@ -706,7 +792,7 @@ export function BigPicture({
     playBack();
     setConfirm("exit");
     setConfirmFocus("confirm:no");
-  }, [goScreen, skipBoot]);
+  }, [closeOpenGroup, goScreen, skipBoot]);
 
   const moveList = (dx: number, dy: number) => {
     const keys = listKeysRef.current;
@@ -847,9 +933,9 @@ export function BigPicture({
       }
 
       if (zoneRef.current === "tabs") {
-        if (action === "up") cycleScreen(-1);
-        else if (action === "down") cycleScreen(1);
-        else if (action === "right" || action === "confirm") {
+        if (action === "up" || action === "left") cycleScreen(-1);
+        else if (action === "right") cycleScreen(1);
+        else if (action === "down" || action === "confirm") {
           playMove();
           setZone(screenRef.current === "library" ? "stage" : "list");
         }
@@ -857,18 +943,17 @@ export function BigPicture({
       }
 
       if (screenRef.current === "library") {
+        if (groupMotionRef.current === "collapse" || groupMotionRef.current === "restore") return;
+        const n = stripLenRef.current;
         if (action === "left") {
-          if (cursorRef.current > 0) {
+          if (n > 0) {
             playMove();
-            setCursor((c) => c - 1);
-          } else {
-            playMove();
-            setZone("tabs");
+            setCursor((c) => (c - 1 + n) % n);
           }
         } else if (action === "right") {
-          if (cursorRef.current < stripLenRef.current - 1) {
+          if (n > 0) {
             playMove();
-            setCursor((c) => c + 1);
+            setCursor((c) => (c + 1) % n);
           }
         } else if (action === "up") {
           playMove();
@@ -888,14 +973,8 @@ export function BigPicture({
         }
         moveList(0, -1);
       } else if (action === "down") moveList(0, 1);
-      else if (action === "left") {
-        const keys = listKeysRef.current;
-        const idx = keys.indexOf(listFocusRef.current);
-        if (idx <= 0 || screenRef.current === "explorer") {
-          playMove();
-          setZone("tabs");
-        } else moveList(-1, 0);
-      } else if (action === "right") moveList(1, 0);
+      else if (action === "left") moveList(-1, 0);
+      else if (action === "right") moveList(1, 0);
       else if (action === "confirm") activateList(listFocusRef.current);
       else if (action === "favorite") {
         const key = listFocusRef.current;
@@ -1035,9 +1114,11 @@ export function BigPicture({
               key={t.id}
               type="button"
               className={`bp-rail-btn${screen === t.id ? " is-active" : ""}`}
+              aria-current={screen === t.id ? "page" : undefined}
               onClick={() => {
                 playConfirm();
                 goScreen(t.id);
+                setZone(t.id === "library" ? "stage" : "list");
               }}
             >
               <span className="bp-rail-icon" aria-hidden>
@@ -1057,50 +1138,96 @@ export function BigPicture({
               ) : (
                 <>
                   <p className="bp-row-label">{openGroup ? openGroup.group.name : "Games"}</p>
-                  <div className="bp-flow" aria-label="Game carousel">
+                  <div className="bp-flow" aria-label="Game wheel">
                     {strip.map((item, i) => {
-                      const off = i - cursor;
+                      const off = wrapOffset(i, cursor, strip.length);
                       if (Math.abs(off) > FLOW_WINDOW) return null;
+                      const folder = item.kind === "folder";
+                      const accent = folder
+                        ? groupAccent(item.group.id)
+                        : openGroup
+                          ? groupAccent(openGroup.group.id)
+                          : null;
+                      const memberIndex =
+                        openGroup && !folder
+                          ? Math.max(0, openGroup.members.findIndex((g) => g.id === item.game.id))
+                          : i;
+                      const closedFolder =
+                        groupMotion === "restore" && folder && item.group.id === restoreGroupId;
+                      const motionClass =
+                        openGroup && !folder && groupMotion === "expand"
+                          ? " bp-slide-out"
+                          : openGroup && !folder && groupMotion === "collapse"
+                            ? " bp-slide-in"
+                            : groupMotion === "restore" && !closedFolder
+                              ? " bp-slide-out"
+                              : "";
+                      const style = {
+                        ...wheelStyle(off),
+                        ...(accent ? { ["--group-accent" as string]: accent } : {}),
+                        ...(motionClass
+                          ? {
+                              ...(openGroup
+                                ? fanVars(memberIndex)
+                                : {
+                                    "--bp-fan-x": "0px",
+                                    "--bp-fan-y": "0px",
+                                    "--bp-fan-rot": "0deg",
+                                  }),
+                              ["--bp-fly-delay" as string]: openGroup
+                                ? `${(memberIndex % 3) * 0.05}s`
+                                : `${Math.abs(off) * 0.05}s`,
+                            }
+                          : {}),
+                      };
                       return (
                         <button
                           key={item.id}
                           type="button"
-                          className={`bp-flow-card${off === 0 ? " is-center" : ""}`}
-                          style={{
-                            zIndex: 20 - Math.abs(off),
-                            transform: `translateX(${off * 12.4}vw) scale(${off === 0 ? 1.12 : 0.86 - Math.abs(off) * 0.04})`,
-                            opacity: Math.max(0.32, 1 - Math.abs(off) * 0.16),
+                          className={`bp-flow-card${off === 0 ? " is-center" : ""}${folder ? " is-folder" : ""}${accent ? " is-grouped" : ""}${motionClass}`}
+                          style={style}
+                          onClick={() => {
+                            if (i === cursor) playCentered();
+                            else {
+                              playMove();
+                              setCursor(i);
+                            }
                           }}
-                      onClick={() => {
-                        if (i === cursor) playCentered();
-                        else {
-                          playMove();
-                          setCursor(i);
-                        }
-                      }}
-                    >
-                      <div className="cover">
-                        {item.kind === "folder" ? (
-                          <div className="stack-layers">
-                            {item.members.slice(0, 3).map((g, n) => (
-                              <div key={g.id} className={`stack-card stack-card-${n}`} style={{ zIndex: 3 - n }}>
-                                <CoverImg game={g} override={coverMap[g.id]} loading="eager" allowRemote={false} />
-                              </div>
-                            ))}
+                        >
+                          <div className="cover">
+                            {folder ? (
+                              <>
+                                <span className="bp-flow-count">{item.members.length}</span>
+                                <div className="stack-layers">
+                                  {item.members.slice(0, 3).map((g, n) => (
+                                    <div
+                                      key={g.id}
+                                      className={`stack-card stack-card-${n}`}
+                                      style={{ zIndex: 3 - n }}
+                                    >
+                                      <CoverImg
+                                        game={g}
+                                        override={coverMap[g.id]}
+                                        loading="eager"
+                                        allowRemote={false}
+                                      />
+                                    </div>
+                                  ))}
+                                </div>
+                              </>
+                            ) : (
+                              <CoverImg
+                                game={item.game}
+                                override={coverMap[item.game.id]}
+                                loading="eager"
+                                allowRemote={false}
+                              />
+                            )}
                           </div>
-                        ) : (
-                          <CoverImg
-                            game={item.game}
-                            override={coverMap[item.game.id]}
-                            loading="eager"
-                            allowRemote={false}
-                          />
-                        )}
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
+                        </button>
+                      );
+                    })}
+                  </div>
               {center && (
                 <div className="bp-now">
                   <h2>{center.kind === "folder" ? center.group.name : center.game.name}</h2>
@@ -1676,10 +1803,14 @@ function ConfirmSheet({
 }) {
   const copy =
     kind === "exit"
-      ? { title: "Leave Big Picture?", body: "Return to the desktop launcher." }
-      : kind === "restart"
-        ? { title: "Restart this PC?", body: "Unsaved work may be lost." }
-        : { title: "Shut down this PC?", body: "Unsaved work may be lost." };
+      ? { title: "Leave Big Picture?", body: "Return to the desktop launcher.", yes: "Leave", danger: false }
+      : kind === "sleep"
+        ? { title: "Put this PC to sleep?", body: "Games and apps will pause. Wake the PC to keep playing.", yes: "Sleep", danger: false }
+        : kind === "lock"
+          ? { title: "Lock this PC?", body: "You'll need to sign in again to use the desktop.", yes: "Lock", danger: false }
+          : kind === "restart"
+            ? { title: "Restart this PC?", body: "Unsaved work may be lost.", yes: "Restart", danger: true }
+            : { title: "Shut down this PC?", body: "Unsaved work may be lost.", yes: "Shut down", danger: true };
   return (
     <div className="bp-sheet" onClick={onNo}>
       <div className="bp-confirm" onClick={(e) => e.stopPropagation()}>
@@ -1691,10 +1822,10 @@ function ConfirmSheet({
           </button>
           <button
             type="button"
-            className={`btn ${kind === "exit" ? "btn-primary" : "bp-btn-danger"}${focus === "confirm:yes" ? " is-focus" : ""}`}
+            className={`btn ${copy.danger ? "bp-btn-danger" : "btn-primary"}${focus === "confirm:yes" ? " is-focus" : ""}`}
             onClick={onYes}
           >
-            {kind === "exit" ? "Leave" : kind === "restart" ? "Restart" : "Shut down"}
+            {copy.yes}
           </button>
         </div>
       </div>

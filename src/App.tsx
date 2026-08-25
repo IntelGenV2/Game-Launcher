@@ -2,9 +2,8 @@
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AddToGroupModal } from "./components/AddToGroupModal";
-import { BigPicture } from "./components/BigPicture";
 import { BulkAddToGroupModal } from "./components/BulkAddToGroupModal";
 import { CoverPickModal } from "./components/CoverPickModal";
 import { FlyCover, type FlyOrigin } from "./components/FlyCover";
@@ -50,6 +49,10 @@ import {
 } from "./types";
 import "./styles/theme.css";
 import "./styles/App.css";
+
+const BigPicture = lazy(() =>
+  import("./components/BigPicture").then((m) => ({ default: m.BigPicture })),
+);
 
 const COVER_PICK_KEY = "intelgen.coverPickDismissed";
 
@@ -1836,19 +1839,21 @@ function App() {
       <SystemPage open={systemOpen} onClose={() => setSystemOpen(false)} />
 
       {bigPicture && (
-        <BigPicture
-          games={games.filter((g) => !g.hidden)}
-          groups={groups}
-          coverMap={coverMap}
-          libraryOrder={libraryOrder}
-          reduceMotion={settings.reduceMotion === true}
-          onLaunch={handleLaunch}
-          onToggleFavorite={handleToggleFavorite}
-          onOpenFolder={handleOpenFolder}
-          onOpenSaveFolder={handleOpenSaveFolder}
-          onExit={() => void toggleBigPicture()}
-          onToast={showToast}
-        />
+        <Suspense fallback={null}>
+          <BigPicture
+            games={games.filter((g) => !g.hidden)}
+            groups={groups}
+            coverMap={coverMap}
+            libraryOrder={libraryOrder}
+            reduceMotion={settings.reduceMotion === true}
+            onLaunch={handleLaunch}
+            onToggleFavorite={handleToggleFavorite}
+            onOpenFolder={handleOpenFolder}
+            onOpenSaveFolder={handleOpenSaveFolder}
+            onExit={() => void toggleBigPicture()}
+            onToast={showToast}
+          />
+        </Suspense>
       )}
 
       <SettingsModal

@@ -13,6 +13,7 @@ import {
   GameGroup,
   coverSrc,
   gameOrderKey,
+  groupAccent,
   groupOrderKey,
   reconcileLibraryOrder,
 } from "../types";
@@ -49,12 +50,6 @@ interface Props {
   emptyTitle?: string;
   emptyBody?: string;
   active?: boolean;
-}
-
-function groupAccent(id: string): string {
-  let h = 0;
-  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
-  return `hsl(${h % 360} 62% 52%)`;
 }
 
 type DragPreview = {

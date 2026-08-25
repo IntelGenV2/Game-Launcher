@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import { Game, GameGroup } from "../types";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { Game, GameGroup, groupAccent } from "../types";
 import { CoverImg } from "./CoverImg";
 import {
   TileContextMenu,
@@ -77,7 +77,12 @@ export function GroupTile({
       className={`tile group-tile${dropActive ? " drop-target" : ""}${
         dragActive ? " tile-dragging" : ""
       }${focusActive ? " tile-focused" : ""}${menuOpen ? " menu-open" : ""}`}
-      style={{ animationDelay: `${Math.min(index, 24) * 0.02}s` }}
+      style={
+        {
+          animationDelay: `${Math.min(index, 24) * 0.02}s`,
+          "--group-accent": groupAccent(group.id),
+        } as CSSProperties
+      }
       role="button"
       tabIndex={0}
       data-focus-key={`group:${group.id}`}
