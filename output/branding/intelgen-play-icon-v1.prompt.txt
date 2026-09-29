@@ -1,0 +1,11 @@
+Generated with the built-in image_gen tool using intelgen-app-icon-v1.png as the reference. Icon formats exported with the existing Tauri CLI.
+
+Use case: logo-brand
+Asset type: IntelGen app icon, play-button monogram.
+Input image: edit target and material/style reference, the existing silver and cyan-green IG app icon on black.
+Primary request: reshape the actual I and G letters into one right-pointing triangular PLAY button. The outer silhouette of the combined IG monogram must itself be a clear right-facing play triangle. Clever custom letter construction, not ordinary IG letters printed inside a triangle and not a separate play icon beside IG.
+Geometry: a bold vertical I forms the left edge of the play symbol. A custom angular G curves around a large triangular negative-space counter, with sloped top and bottom strokes converging toward the right-facing point and a clearly defined inward crossbar so it still reads as G. The two letterforms together form a unified compact triangular play-button silhouette. Maintain a small clean dark separation between the I and G. Prioritize a strong triangular silhouette and recognizably intentional IG lettering.
+Preserve: polished silver-metal broad bevels, shallow 3D depth, luminous cyan-green inset faces with restrained CRT phosphor character, near-black background, no full name.
+Composition: one centered emblem on a square 1:1 near-black canvas, visually balanced, fills approximately 76% of the frame with safe margins for app-icon use. Almost front-facing, low perspective distortion.
+Small-size readability: wide solid strokes, large open negative spaces, simple geometry, minimal surface noise, high contrast, crisp boundaries, restrained glow. The play silhouette must remain obvious at 32px.
+Constraints: only this single IG/play hybrid emblem. No wordmark, no additional text, no enclosing badge, no extra triangle behind the letters, no separate play glyph, no grid or presentation mockup, no particles or circuitry.

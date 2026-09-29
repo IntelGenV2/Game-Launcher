@@ -1,0 +1,19 @@
+Generated with the built-in image_gen tool using intelgen-3d-crt-v1.png as the edit target/style reference.
+
+Emblem-only
+Use case: precise-object-edit
+Asset type: IntelGen logo, emblem-only version.
+Input image: edit target, the existing IntelGen metallic IG logo on a black background.
+Primary request: remove the entire word "IntelGen" beneath the emblem and leave only the existing IG monogram. Recenter the remaining emblem horizontally and vertically on the same square black canvas, with generous even margins.
+Invariants: preserve the exact I and G letter shapes, interlocking silhouette, perspective, metallic bevels, cyan-green CRT scanline inset faces, and restrained glow. Preserve the existing black background and polished visual quality.
+Constraints: no wordmark, no added text, no additional shapes, no redesign. Only the original IG symbol centered.
+
+App icon
+Use case: logo-brand
+Asset type: final square IntelGen application icon.
+Input image: visual style reference showing IntelGen's sculpted silver IG monogram with cyan-green CRT glow. Create a second, simpler app-icon adaptation.
+Primary request: a compact, exceptionally legible I + G monogram that works as a desktop application icon at 32px and 48px. Preserve the silver-metal and cyan-green illuminated identity, but redesign the geometry for small sizes.
+Composition: square 1:1 icon artwork, full-bleed uniform near-black background. One very large centered compact IG symbol occupying approximately 78 percent of the canvas in both dimensions, with balanced safe padding for common rounded-square icon masks. No separate floating tile or mockup.
+Letter design: upright and almost front-facing, the I a clear stout vertical pillar on the left and the G a bold open geometric G on the right, closely integrated into a compact square silhouette. Broad strokes, large clean interior openings, substantial separation between the two letters, a clear G crossbar. Make the G read immediately, not as C or 6.
+Style: refined modern 3D with shallow extrusion and broad polished silver bevels. Bright cyan-green inset faces. Simplify all tiny details; CRT influence comes from restrained phosphor light and at most a few broad tonal bands, not hundreds of fine scanlines. Clear flat color masses should remain identifiable when reduced.
+Constraints: only I and G, no IntelGen name, no other words, no tiny ornaments, no fine outlines, no circuit patterns, no particles, no busy texture, no scattered glow, no long shadows. Strong contrast and crisp edges. This must look like an actual finished app icon, not a logo presentation sheet.

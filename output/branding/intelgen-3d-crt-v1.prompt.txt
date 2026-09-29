@@ -1,0 +1,13 @@
+Generated with the built-in image_gen tool.
+
+Use case: logo-brand
+Asset type: finished logo concept for IntelGen, a game launcher.
+Primary request: make a creative letter-based IntelGen logo blending modern sculpted 3D typography with a restrained CRT phosphor aesthetic.
+Scene/backdrop: clean near-black background, no environment or mockup.
+Subject: a distinctive interlocking I and G monogram above a smaller custom wordmark reading exactly "IntelGen". Build the I and G from one coherent folded, machined ribbon with clever negative space; both letters should remain recognizable. Strong, simple silhouette suitable for an app brand.
+Style/medium: premium 3D identity design, precise bevels, polished metal faces with dark recessed sides, gentle CRT phosphor emission and extremely fine horizontal scanlines within the illuminated inset surfaces. Slight perspective reveals physical depth while the logo remains front-facing and legible.
+Composition/framing: one centered logo lockup, emblem dominant, balanced spacing above the full wordmark, generous negative space, carefully art-directed.
+Lighting/mood: crisp highlights and subtle luminous edges, confident and modern, restrained retro-futurism.
+Text (verbatim): "IntelGen"; spell I-n-t-e-l-G-e-n. The monogram contains I and G.
+Constraints: one logo only, crisp readable lettering, clean controllable silhouette, tasteful dimensionality. No tagline, no additional text, no brand sheet, no grid, no watermark.
+Avoid: generic circuit-board patterns, literal computer or CRT monitor illustration, controller icons, shields, excessive glitch, particle clouds, lens flares, sprawling bloom, illegible tangled letters.

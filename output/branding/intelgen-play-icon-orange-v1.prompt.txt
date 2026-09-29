@@ -1,0 +1,8 @@
+Edited with the built-in image_gen tool using intelgen-play-icon-v2.png. Icon formats exported with the existing Tauri CLI.
+
+Use case: precise-object-edit
+Asset type: IntelGen IG play-button app icon, orange color variant.
+Input image: edit target, the latest silver-metal IG/play monogram with an open G on a black background.
+Primary request: change only the cyan/turquoise illumination to vivid orange. Recolor the luminous inset faces, their luminous edge accents, and their reflected colored light to rich saturated orange, with warm bright orange highlights and darker burnt-orange shadows. No cyan, teal, or green illumination should remain.
+Invariants: preserve the exact geometry and dimensions of both letters, the triangular play-button silhouette, and especially the clear open black gap at the G's right-hand end. Do not close or bridge that gap. Keep the polished silver metal bevels silver, allowing only subtle orange light reflections. Keep the black background, composition, margins, square canvas, shallow 3D perspective, texture, brightness balance, and lighting pattern the same.
+Only a color change. No wordmark, no added shapes, no redesign. Maintain crisp high-contrast boundaries for small app-icon sizes.

@@ -1,0 +1,10 @@
+Edited with the built-in image_gen tool using intelgen-play-icon-v1.png. Icon formats exported with the existing Tauri CLI.
+
+Use case: precise-object-edit
+Asset type: IntelGen IG play-button app icon, corrected open G.
+Input image: edit target, the existing metallic cyan IG play-button logo.
+User correction: "the g looks odd at the end, dont close the end".
+Make one precise geometric correction: OPEN THE G AT ITS RIGHT-HAND END. Currently the outer silver bevel wraps continuously around the rightmost tip and joins the upper diagonal arm to the lower inward-hooking arm. Remove that connecting outer silver bridge completely. End the top diagonal arm with a clean independent beveled endcap before it reaches the lower arm. Leave a clearly visible wide black gap that runs all the way from the G's interior counter through its right edge to the outside black background. There must be empty background between the upper terminal and the lower hooked crossbar, not a thin dark seam on connected metal. Both the cyan face and every silver rim/extrusion must stop at the opening. No metal can connect across or behind that opening.
+Preserve the lower arm and its inward horizontal G crossbar so the letter remains a recognizable G. Preserve the triangular play-button impression with sloping top and bottom arms.
+Invariants: keep the left I unchanged; preserve all other letter geometry, composition, square canvas, placement, size, silver bevel material, shallow 3D perspective, cyan-green CRT-like illumination, black background, and existing lighting. No wordmark or added elements.
+The single requested change is the clear open gap at the rightmost end of the G; do not redesign the logo. Make the gap strong enough to remain visible in a 32px app icon.
