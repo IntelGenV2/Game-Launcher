@@ -38,7 +38,6 @@
   height: 26px;
   object-fit: contain;
   flex-shrink: 0;
-  filter: drop-shadow(0 0 6px rgba(255, 140, 40, 0.45));
 }
 
 .brand-name {
@@ -70,7 +69,7 @@
   padding: 0.42rem 0.8rem 0.42rem 2.05rem;
   border-radius: 999px;
   border: 1px solid var(--border-glass);
-  background: rgba(0, 0, 0, 0.28);
+  background: var(--control-inset);
   color: var(--text);
   outline: none;
   font-size: 0.85rem;
@@ -237,7 +236,7 @@
 .toolbar-select {
   appearance: none;
   border: 1px solid var(--border-glass);
-  background: rgba(0, 0, 0, 0.28);
+  background: var(--control-inset);
   color: var(--text);
   border-radius: 999px;
   padding: 0.55rem 1.75rem 0.55rem 0.9rem;
@@ -260,7 +259,7 @@
 .custom-select-trigger {
   appearance: none;
   border: 1px solid var(--border-glass);
-  background: rgba(0, 0, 0, 0.25);
+  background: var(--control-inset);
   color: var(--text-muted);
   border-radius: 999px;
   padding: 0 0.72rem;
@@ -423,7 +422,7 @@
   margin-left: auto;
   appearance: none;
   border: 1px solid var(--border-glass);
-  background: rgba(0, 0, 0, 0.25);
+  background: var(--control-inset);
   color: var(--text-muted);
   border-radius: 999px;
   padding: 0.35rem 0.9rem;
@@ -1298,7 +1297,7 @@ body.library-dragging * {
 .cover-pick-card {
   appearance: none;
   border: 2px solid var(--border-strong);
-  background: rgba(0, 0, 0, 0.28);
+  background: var(--control-inset);
   border-radius: 10px;
   padding: 0;
   aspect-ratio: 2 / 3;
@@ -1507,7 +1506,7 @@ body.library-dragging * {
 .theme-swatch {
   appearance: none;
   border: 1px solid var(--border-glass);
-  background: rgba(0, 0, 0, 0.25);
+  background: var(--control-inset);
   color: var(--text-muted);
   border-radius: var(--radius-sm);
   padding: 0.45rem 0.55rem;
@@ -1557,7 +1556,7 @@ body.library-dragging * {
 .chip-btn {
   appearance: none;
   border: 1px solid var(--border-glass);
-  background: rgba(0, 0, 0, 0.25);
+  background: var(--control-inset);
   color: var(--text-muted);
   border-radius: 10px;
   padding: 0 0.75rem;
@@ -2298,7 +2297,7 @@ body.library-dragging * {
   padding: 0.35rem 0.6rem;
   border-radius: 999px;
   border: 1px solid var(--border-glass);
-  background: rgba(0, 0, 0, 0.28);
+  background: var(--control-inset);
   color: var(--text);
 }
 
@@ -2307,7 +2306,7 @@ body.library-dragging * {
   min-height: 180px;
   border-radius: 12px;
   border: 1px solid var(--border-glass);
-  background: rgba(0, 0, 0, 0.28);
+  background: var(--control-inset);
   color: var(--text);
   padding: 0.85rem;
   font: inherit;
@@ -2733,26 +2732,6 @@ body.library-dragging * {
   overflow: hidden;
 }
 
-.bp-stage-bg {
-  position: absolute;
-  inset: -12%;
-  background-size: cover;
-  background-position: center;
-  filter: blur(48px) saturate(1.35);
-  opacity: 0.38;
-  transform: scale(1.08);
-  pointer-events: none;
-}
-
-.bp-stage-veil {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background:
-    radial-gradient(80% 70% at 50% 40%, transparent 20%, rgba(5, 7, 10, 0.55) 70%, #05070a 100%),
-    linear-gradient(180deg, rgba(5, 7, 10, 0.35), transparent 18%, transparent 72%, #05070a 100%);
-}
-
 .bp-hud {
   position: relative;
   z-index: 3;
@@ -2776,7 +2755,6 @@ body.library-dragging * {
   object-fit: contain;
   object-position: center;
   display: block;
-  filter: drop-shadow(0 0 8px var(--accent));
 }
 
 .bp-hud-name {
@@ -2819,7 +2797,6 @@ body.library-dragging * {
   bottom: 0;
   height: 2px;
   background: var(--accent);
-  box-shadow: 0 0 12px var(--accent);
 }
 
 .bp-tabs.is-hot .bp-tab.is-active {
@@ -2900,16 +2877,13 @@ body.library-dragging * {
   color: var(--accent-hot);
   background: color-mix(in srgb, var(--accent) 14%, transparent);
   border-left-color: var(--accent);
-  box-shadow: 0 0 18px color-mix(in srgb, var(--accent) 16%, transparent);
 }
 
 .bp-rail.is-hot .bp-rail-btn.is-focus {
   color: var(--accent-hot);
   background: color-mix(in srgb, var(--accent) 26%, transparent);
   border-left-color: var(--accent);
-  box-shadow:
-    0 0 0 2px var(--accent),
-    0 0 22px color-mix(in srgb, var(--accent) 28%, transparent);
+  box-shadow: 0 0 0 2px var(--accent);
 }
 
 .bp-rail.is-hot .bp-rail-btn.is-active:not(.is-focus) {
@@ -3047,7 +3021,6 @@ body.library-dragging * {
   border-color: var(--accent);
   box-shadow:
     0 0 0 2px var(--accent),
-    0 0 28px color-mix(in srgb, var(--accent) 45%, transparent),
     0 22px 50px rgba(0, 0, 0, 0.6);
 }
 
@@ -3062,7 +3035,6 @@ body.library-dragging * {
   border-color: var(--group-accent, var(--accent));
   box-shadow:
     0 0 0 2px var(--group-accent, var(--accent)),
-    0 0 28px color-mix(in srgb, var(--group-accent, var(--accent)) 45%, transparent),
     0 22px 50px rgba(0, 0, 0, 0.6);
 }
 
@@ -3083,7 +3055,6 @@ body.library-dragging * {
 .bp-flow-card.is-folder.is-grouped.is-center .stack-card {
   box-shadow:
     0 0 0 2px var(--group-accent, var(--accent)),
-    0 0 22px color-mix(in srgb, var(--group-accent, var(--accent)) 40%, transparent),
     0 8px 24px rgba(0, 0, 0, 0.35);
 }
 
@@ -3153,7 +3124,6 @@ body.library-dragging * {
   padding: calc(12px * var(--bp-scale)) calc(36px * var(--bp-scale));
   border-radius: 4px;
   cursor: pointer;
-  box-shadow: 0 0 22px color-mix(in srgb, var(--accent) 35%, transparent);
 }
 
 .bp-panel {
@@ -3416,7 +3386,6 @@ body.library-dragging * {
   border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
   border-radius: 6px;
   padding: calc(22px * var(--bp-scale));
-  box-shadow: 0 0 40px color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
 .bp-browse-panel h2 {
@@ -3609,8 +3578,6 @@ body.library-dragging * {
   display: block;
   flex-shrink: 0;
   min-height: 0;
-  filter: drop-shadow(0 0 12px var(--accent));
-  animation: bp-pulse 1.6s ease-in-out infinite;
 }
 
 .bp-boot-title {
@@ -3643,7 +3610,6 @@ body.library-dragging * {
   display: block;
   height: 100%;
   background: var(--accent);
-  box-shadow: 0 0 12px var(--accent);
 }
 
 .bp-boot-label,
@@ -3653,25 +3619,12 @@ body.library-dragging * {
   font-size: calc(13px * var(--bp-scale));
 }
 
-.reduce-motion .bp-boot-mark,
 .reduce-motion .bp-flow-card,
 .reduce-motion .bp-rail,
 .reduce-motion .bp-rail-btn,
 .reduce-motion .bp-body {
   animation: none;
   transition: none;
-}
-
-@keyframes bp-pulse {
-  0%,
-  100% {
-    opacity: 1;
-    filter: drop-shadow(0 0 14px var(--accent));
-  }
-  50% {
-    opacity: 0.88;
-    filter: drop-shadow(0 0 28px var(--accent));
-  }
 }
 
 @media (max-width: 1100px) {
@@ -3722,13 +3675,11 @@ body.library-dragging * {
 /* Window chrome and library controls */
 .app-window {
   height:100%; display:flex; flex-direction:column; overflow:hidden;
-  background: radial-gradient(1200px 600px at 10% -10%, var(--shell-glow-a), transparent 55%),
-    radial-gradient(900px 500px at 90% 0%, var(--shell-glow-b), transparent 50%),
-    rgba(8, 12, 18, var(--window-opacity, .85));
+  background: rgba(8, 12, 18, var(--window-opacity, .85));
   backdrop-filter: blur(28px) saturate(1.2);
 }
 .app-window > .app-shell { flex:1; min-height:0; height:auto; }
-.titlebar { min-height:54px; flex-shrink:0; display:grid; grid-template-columns:160px minmax(0,1fr) 126px; align-items:stretch; border-bottom:1px solid var(--border-glass); user-select:none; position:relative; z-index:80; }
+.titlebar { min-height:54px; flex-shrink:0; display:grid; grid-template-columns:max-content minmax(0,1fr) max-content; align-items:stretch; border-bottom:1px solid var(--border-glass); user-select:none; position:relative; z-index:80; }
 .titlebar-brand { width:auto; gap:6px; padding:0 14px; }
 .titlebar-brand img { width:32px; height:32px; pointer-events:none; }
 .titlebar-content { min-width:0; }
@@ -3803,7 +3754,6 @@ body.library-dragging * {
 .system-device h4 { margin:0 0 10px; }
 .system-error { color:var(--danger, #ff9e8c); }
 @media (max-width:1100px) {
-  .titlebar { grid-template-columns:160px minmax(0,1fr) 112px; }
   .titlebar .topbar { padding-inline:5px; gap:5px; }
   .titlebar .topbar-tools { gap:5px; }
   .titlebar .search-wrap { min-width:80px; flex-basis:100px; }
@@ -3830,4 +3780,39 @@ body.library-dragging * {
 @media(max-width:1100px) {
   .library-filter-slider button { padding-inline:4px; font-size:.72rem; }
   .titlebar .search-wrap { min-width:80px; }
+}
+
+/* Recessed control surfaces share the search field's dark fill. */
+:is(.settings-panel, .system-layout) :where(button, summary),
+:is(.sidebar-btn, .bp-place, .bp-file, .bp-power) {
+  border: 1px solid var(--border-glass);
+  background-color: var(--control-inset);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.55);
+}
+
+:is(.settings-panel, .system-layout) :where(button, summary):hover:not(:disabled),
+:is(.sidebar-btn, .bp-place, .bp-file, .bp-power):hover {
+  border-color: var(--border-strong);
+}
+
+:is(.settings-panel, .system-layout) :is(.active, .btn-primary, [aria-selected="true"]),
+.sidebar-btn.active {
+  background: color-mix(in srgb, var(--accent) 18%, var(--bg-deep));
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--bg-deep));
+}
+
+.settings-panel .btn-danger {
+  border-color: color-mix(in srgb, var(--danger) 55%, var(--bg-deep));
+}
+
+.settings-panel :is(.linkish, summary) {
+  width: fit-content;
+  padding: 0.4rem 0.7rem;
+  border-radius: var(--radius-sm);
+}
+
+:is(.settings-panel, .system-layout) :is(button, summary):focus-visible,
+.system-layout .settings-nav-btn.is-focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }

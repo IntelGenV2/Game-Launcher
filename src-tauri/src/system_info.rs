@@ -204,7 +204,7 @@ fn disks() -> Vec<DiskInfo> {
         }
         let mut buf = vec![0u16; needed as usize];
         let n = GetLogicalDriveStringsW(needed, buf.as_mut_ptr());
-        if n == 0 {
+        if n == 0 || n > needed {
             return Vec::new();
         }
         let mut out = Vec::new();
@@ -303,6 +303,7 @@ fn hardware_snapshot() -> serde_json::Value {
         let script = r#"
 $ErrorActionPreference = 'SilentlyContinue'
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
+$activePlan = Get-CimInstance -Namespace root/cimv2/power -ClassName Win32_PowerPlan -Filter 'IsActive = TRUE' | Select-Object -First 1
 @{
   processors = @(Get-CimInstance Win32_Processor | Select-Object Name,NumberOfCores,NumberOfLogicalProcessors,MaxClockSpeed,L3CacheSize)
   memory = @(Get-CimInstance Win32_PhysicalMemory | Select-Object DeviceLocator,Capacity,ConfiguredClockSpeed,Speed,Manufacturer,PartNumber)
@@ -310,7 +311,7 @@ $ErrorActionPreference = 'SilentlyContinue'
   storage = @(Get-PhysicalDisk | Select-Object FriendlyName,MediaType,BusType,HealthStatus,Size)
   board = @(Get-CimInstance Win32_BaseBoard | Select-Object Manufacturer,Product)
   bios = @(Get-CimInstance Win32_BIOS | Select-Object SMBIOSBIOSVersion)
-  powerPlan = (Get-CimInstance -Namespace root/cimv2/power -ClassName Win32_PowerPlan | Where-Object IsActive | Select-Object -ExpandProperty ElementName)
+  powerPlan = [string]$activePlan.ElementName
 } | ConvertTo-Json -Depth 4 -Compress
 "#;
         let Ok(mut child) = Command::new("powershell.exe")

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.9
+
+- The title bar gives the full Studio 256 name room beside Search.
+- Fixed a crash when opening hardware details and corrected the labels for Windows storage devices.
+- Settings, System, and navigation buttons use dark recessed surfaces. Removed decorative glow effects from the library and Big Picture.
+- Windows shortcuts and existing taskbar pins use the Studio 256 cartridge icon.
+
 ## 0.3.8
 
 - Renamed the app to **Studio 256 Game Launcher** and added the Studio 256 cartridge icon to the desktop, Big Picture, and Windows installer.

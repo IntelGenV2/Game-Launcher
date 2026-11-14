@@ -6,7 +6,7 @@ interface Hardware {
   processors?: { Name: string; NumberOfCores: number; NumberOfLogicalProcessors: number; MaxClockSpeed: number; L3CacheSize: number }[];
   memory?: { DeviceLocator: string; Capacity: number; ConfiguredClockSpeed: number; Speed: number; Manufacturer: string; PartNumber: string }[];
   graphics?: { Name: string; DriverVersion: string; VideoProcessor: string; CurrentHorizontalResolution: number; CurrentVerticalResolution: number; CurrentRefreshRate: number }[];
-  storage?: { FriendlyName: string; MediaType: number; BusType: number; HealthStatus: number; Size: number }[];
+  storage?: { FriendlyName: string; MediaType: string | number; BusType: string | number; HealthStatus: string | number; Size: number }[];
   board?: { Manufacturer: string; Product: string }[];
   bios?: { SMBIOSBIOSVersion: string }[];
   powerPlan?: string;
@@ -35,7 +35,12 @@ function bytes(value: number): string {
   return value >= 1024 ** 3 ? `${(value / 1024 ** 3).toFixed(1)} GB` : `${Math.round(value / 1024 ** 2)} MB`;
 }
 function Row({ label, value, children }: { label: string; value?: string | number | null; children?: ReactNode }) {
-  return <div className="sys-row"><dt>{label}</dt><dd>{value || "Unavailable"}{children}</dd></div>;
+  const detail = typeof value === "string" ? value.trim() : Number.isFinite(value) ? value : null;
+  return <div className="sys-row"><dt>{label}</dt><dd>{detail === "" || detail == null ? "Unavailable" : detail}{children}</dd></div>;
+}
+function diskProperty(value: string | number, labels: Record<number, string>, fallback: string) {
+  if (typeof value === "string" && value.trim() && !Number.isFinite(Number(value))) return value;
+  return value == null || value === "" ? fallback : labels[Number(value)] ?? fallback;
 }
 function Meter({ used, total }: { used: number; total: number }) {
   const percent = total > 0 ? Math.max(0, Math.min(100, used / total * 100)) : 0;
@@ -93,9 +98,9 @@ export function SystemDetails({ info, section }: { info: SystemInfo; section: Sy
         <Meter used={disk.totalBytes - disk.availableBytes} total={disk.totalBytes} />
       </div>)}
       {hw?.storage?.map((disk, i) => <div className="system-device" key={i}><h4>{disk.FriendlyName}</h4><dl className="sys-facts">
-        <Row label="Media" value={disk.MediaType === 4 ? "SSD" : disk.MediaType === 3 ? "HDD" : "Unspecified"} />
-        <Row label="Bus" value={({7:"USB",11:"SATA",17:"NVMe",8:"RAID",1:"SCSI"} as Record<number,string>)[disk.BusType] ?? "Other / unspecified"} />
-        <Row label="Windows health status" value={disk.HealthStatus === 0 ? "Healthy" : disk.HealthStatus === 1 ? "Warning" : disk.HealthStatus === 2 ? "Unhealthy" : "Unknown"} />
+        <Row label="Media" value={diskProperty(disk.MediaType, { 3: "HDD", 4: "SSD" }, "Unspecified")} />
+        <Row label="Bus" value={diskProperty(disk.BusType, { 1: "SCSI", 7: "USB", 8: "RAID", 11: "SATA", 17: "NVMe" }, "Other / unspecified")} />
+        <Row label="Windows health status" value={diskProperty(disk.HealthStatus, { 0: "Healthy", 1: "Warning", 2: "Unhealthy" }, "Unknown")} />
         <Row label="Physical capacity" value={bytes(disk.Size)} /></dl></div>)}
     </>}
     {section === "windows" && <dl className="sys-facts">

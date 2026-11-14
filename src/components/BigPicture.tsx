@@ -24,7 +24,6 @@ import {
   SortMode,
   Store,
   coverSourceLabel,
-  coverSrc,
   formatLastPlayed,
   formatPlaytime,
   gameOrderKey,
@@ -436,8 +435,6 @@ export function BigPicture({
 
   stripLenRef.current = strip.length;
   const center = strip[Math.min(cursor, Math.max(0, strip.length - 1))] ?? null;
-  const centerGame = center?.kind === "game" ? center.game : center?.members[0] ?? null;
-  const bgSrc = centerGame ? coverSrc(centerGame, coverMap[centerGame.id]) : null;
 
   useEffect(() => {
     setCursor((c) => Math.max(0, Math.min(c, Math.max(0, strip.length - 1))));
@@ -1236,11 +1233,6 @@ export function BigPicture({
       role="application"
       aria-label="Big Picture"
     >
-      {bgSrc && screen === "library" && !selected && !browseOpen && (
-        <div className="bp-stage-bg" style={{ backgroundImage: `url("${bgSrc.replace(/"/g, "")}")` }} />
-      )}
-      <div className="bp-stage-veil" />
-
       {booting && (
         <div className="bp-boot" onClick={skipBoot}>
           <img src="/studio-256-cartridge.png" alt="" className="bp-boot-mark" />

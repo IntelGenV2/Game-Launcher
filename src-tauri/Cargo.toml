@@ -1,6 +1,6 @@
 [package]
 name = "game-launcher"
-version = "0.3.8"
+version = "0.3.9"
 description = "Windows game launcher with a cover library, store scanning, groups, and Big Picture couch mode."
 authors = ["Studio 256"]
 edition = "2021"
