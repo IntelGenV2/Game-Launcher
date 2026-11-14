@@ -14,6 +14,7 @@ import { GroupAddModal } from "./components/GroupAddModal";
 import { GroupNameModal } from "./components/GroupNameModal";
 import { LibraryFilters } from "./components/LibraryFilters";
 import { Titlebar } from "./components/Titlebar";
+import { StartupIntro } from "./components/StartupIntro";
 import { RandomPickModal } from "./components/RandomPickModal";
 import { filterLibrary } from "./library";
 import { gameBusy, type LaunchStatus } from "./types";
@@ -50,6 +51,7 @@ import {
   SORT_OPTIONS,
   SortMode,
   STORE_FILTER_OPTIONS,
+  type ThemeId,
 } from "./types";
 import "./styles/theme.css";
 import "./styles/App.css";
@@ -100,6 +102,10 @@ function filterCoverPickQueue(groups: CoverChoiceGroup[]): CoverChoiceGroup[] {
 }
 
 function App() {
+  const [introTheme, setIntroTheme] = useState<ThemeId | "pending" | null>(() =>
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches ? null : "pending"
+  );
+  const finishIntro = useCallback(() => setIntroTheme(null), []);
   const [libraryGames, setGames] = useState<Game[]>([]);
   const [launchStates, setLaunchStates] = useState<Record<string, LaunchStatus>>({});
   const games = useMemo<Game[]>(() => libraryGames.map(game => ({ ...game, launchStatus: launchStates[game.id] })), [libraryGames, launchStates]);
@@ -233,6 +239,7 @@ function App() {
       setSettings(s);
       if (isSortMode(s.sortBy)) setSortBy(s.sortBy);
       applySettingsAppearance(s);
+      setIntroTheme(current => current === "pending" ? (s.reduceMotion ? null : appearanceFromSettings(s).theme) : current);
 
       let list = await invoke<Game[]>("list_games");
       setGames(list.map(asLibraryGame));
@@ -258,6 +265,7 @@ function App() {
       invoke("fetch_covers", { ids: null }).catch(() => undefined);
       void loadCoverPickQueue();
     } catch (e) {
+      setIntroTheme(current => current === "pending" ? null : current);
       showToast(String(e), true);
     } finally {
       setLoading(false);
@@ -1115,6 +1123,13 @@ function App() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (introTheme !== null) {
+        if (e.key === "Escape" || e.key === " " || e.key === "Enter") {
+          e.preventDefault();
+          finishIntro();
+        }
+        return;
+      }
       if (modalOpen) {
         if (e.key === "Escape") {
           setRandomOpen(false);
@@ -1210,6 +1225,8 @@ function App() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [
+    introTheme,
+    finishIntro,
     addMenuOpen,
     selectedGame,
     selectMode,
@@ -1295,7 +1312,9 @@ function App() {
   })();
 
   return (
-    <div className={`app-window${bigPicture ? " bp-open" : ""}`}>
+    <>
+    {introTheme !== null && <StartupIntro theme={introTheme} onFinish={finishIntro} />}
+    <div className={`app-window${bigPicture ? " bp-open" : ""}`} inert={introTheme !== null}>
       <Titlebar onError={showToast}>
         <div className="topbar">
           {mainView === "library" && !selectedGame && (
@@ -1853,6 +1872,7 @@ function App() {
       )}
     </div>
     </div>
+    </>
   );
 }
 

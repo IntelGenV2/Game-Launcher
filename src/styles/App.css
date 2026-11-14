@@ -27,12 +27,6 @@
   overflow: visible;
 }
 
-.brand-mark,
-.bp-hud-mark,
-.bp-boot-mark {
-  image-rendering: pixelated;
-}
-
 .brand-mark {
   width: 26px;
   height: 26px;

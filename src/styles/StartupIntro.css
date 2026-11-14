@@ -1,0 +1,35 @@
+.startup-intro {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: var(--bg-deep);
+  cursor: pointer;
+}
+
+.startup-intro:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -3px;
+}
+
+.startup-intro img {
+  width: min(640px, 80vw, 112vh);
+  height: auto;
+  image-rendering: pixelated;
+}
+
+/* The 52-frame C64 opening plays once in 2080ms, then the library comes through. */
+.startup-intro.is-playing {
+  animation: startup-reveal 240ms ease-out 2080ms forwards;
+}
+
+@keyframes startup-reveal {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}

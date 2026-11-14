@@ -1235,7 +1235,7 @@ export function BigPicture({
     >
       {booting && (
         <div className="bp-boot" onClick={skipBoot}>
-          <img src="/studio-256-cartridge.png" alt="" className="bp-boot-mark" />
+          <img src="/studio-256-cartridge.svg" alt="" className="bp-boot-mark" />
           <h1 className="bp-boot-title">Studio 256</h1>
           <p className="bp-boot-sub">Big Picture</p>
           <div className="bp-boot-bar" role="progressbar" aria-valuenow={bootPct}>

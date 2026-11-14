@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <title>Studio 256 cartridge</title>
+  <g fill="#ebc66f">
+    <rect x="51" y="181" width="17" height="44" rx="4"/>
+    <rect x="97" y="181" width="17" height="44" rx="4"/>
+    <rect x="143" y="181" width="17" height="44" rx="4"/>
+    <rect x="189" y="181" width="17" height="44" rx="4"/>
+  </g>
+  <path fill="#828486" d="M34 60V51q0-20 21-20h146q21 0 21 20v9z"/>
+  <path fill="#46484b" d="M39 46h178q26 0 26 26v105q0 21-15 26-8 3-22 3H50q-14 0-22-3-15-5-15-26V72q0-26 26-26z"/>
+  <rect x="33" y="73" width="190" height="99" rx="14" fill="#ae683c"/>
+  <rect x="40" y="80" width="176" height="85" rx="9" fill="#14181c"/>
+  <path fill="#f4d064" d="M59 99q0-6 5-3l32 23q4 3 0 6l-32 23q-5 3-5-3z"/>
+  <rect x="116" y="104" width="73" height="11" rx="4" fill="#c5c8ca"/>
+  <rect x="116" y="131" width="56" height="11" rx="4" fill="#d98777"/>
+</svg>

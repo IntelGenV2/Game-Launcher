@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.10
+
+- The launcher opens with the Studio 256 C64 cartridge sliding into its socket as the circuit traces grow in your theme color. The three boxes on the cartridge label stay in place through docking.
+- Click or press Escape, Space, or Enter to skip the opening. The launcher opens directly to the library when reduced motion is enabled in Windows or the app.
+- The Windows app, installer, shortcuts, and taskbar use a rounded, letter-free Studio 256 cartridge icon.
+
 ## 0.3.9
 
 - The title bar gives the full Studio 256 name room beside Search.
