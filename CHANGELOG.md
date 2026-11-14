@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.8
 
 - Renamed the app to **Studio 256 Game Launcher** and added the Studio 256 cartridge icon to the desktop, Big Picture, and Windows installer.
 
