@@ -871,6 +871,7 @@ impl Database {
                 "cover_corners" => settings.cover_corners = Some(v),
                 "cover_shape" => settings.cover_shape = Some(v),
                 "reduce_motion" => settings.reduce_motion = Some(v == "1" || v == "true"),
+                "play_startup_intro" => settings.play_startup_intro = Some(v == "1" || v == "true"),
                 "start_with_windows" => settings.start_with_windows = Some(v == "1" || v == "true"),
                 "close_to_tray" => settings.close_to_tray = Some(v == "1" || v == "true"),
                 "start_in_background" => {
@@ -941,6 +942,7 @@ impl Database {
         self.upsert_bool_setting("show_titles", settings.show_titles)?;
         self.upsert_bool_setting("show_store_labels", settings.show_store_labels)?;
         self.upsert_bool_setting("reduce_motion", settings.reduce_motion)?;
+        self.upsert_bool_setting("play_startup_intro", settings.play_startup_intro)?;
         if let Some(v) = &settings.grid_density {
             self.conn.execute(
                 "INSERT INTO settings (key, value) VALUES ('grid_density', ?1)
@@ -1719,6 +1721,26 @@ mod tests {
         assert!(db.get_game("neither").unwrap().unwrap().pinned);
         let game = db.toggle_favorite("neither").unwrap();
         assert!(!game.pinned && !game.favorite);
+    }
+
+    #[test]
+    fn startup_intro_preference_survives_reopening_and_older_settings() {
+        let file = std::env::temp_dir().join(format!("studio256-intro-{}.db", uuid::Uuid::new_v4()));
+        let db = Database::open(&file).unwrap();
+        let mut settings = db.get_settings().unwrap();
+        assert_eq!(settings.play_startup_intro, None);
+        settings.play_startup_intro = Some(false);
+        db.save_settings(&settings).unwrap();
+        db.save_settings(&AppSettings::default()).unwrap();
+        drop(db);
+        let db = Database::open(&file).unwrap();
+        let mut settings = db.get_settings().unwrap();
+        assert_eq!(settings.play_startup_intro, Some(false));
+        settings.play_startup_intro = Some(true);
+        db.save_settings(&settings).unwrap();
+        assert_eq!(db.get_settings().unwrap().play_startup_intro, Some(true));
+        drop(db);
+        std::fs::remove_file(file).unwrap();
     }
 
     #[test]

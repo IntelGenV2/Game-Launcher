@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.11
+
+- An animated 3D Studio 256 title appears as the cartridge docks. Color pulses keep moving along the circuit traces while the title is visible and as the library fades in.
+- Turn the intro on or off in **Settings → Appearance → Play startup animation**. Reduced motion still opens the library directly.
+- The Windows installer refreshes the cartridge icon on desktop and Start menu shortcuts and existing taskbar pins, including renamed pins.
+
 ## 0.3.10
 
 - The launcher opens with the Studio 256 C64 cartridge sliding into its socket as the circuit traces grow in your theme color. The three boxes on the cartridge label stay in place through docking.

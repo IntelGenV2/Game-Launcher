@@ -239,7 +239,11 @@ function App() {
       setSettings(s);
       if (isSortMode(s.sortBy)) setSortBy(s.sortBy);
       applySettingsAppearance(s);
-      setIntroTheme(current => current === "pending" ? (s.reduceMotion ? null : appearanceFromSettings(s).theme) : current);
+      setIntroTheme(current => {
+        if (current !== "pending") return current;
+        if (s.playStartupIntro === false || s.reduceMotion) return null;
+        return appearanceFromSettings(s).theme;
+      });
 
       let list = await invoke<Game[]>("list_games");
       setGames(list.map(asLibraryGame));

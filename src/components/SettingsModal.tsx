@@ -74,6 +74,7 @@ export function SettingsModal({
   const [coverCorners, setCoverCorners] = useState<CoverCorners>("soft");
   const [coverShape, setCoverShape] = useState<CoverShape>("portrait");
   const [reduceMotion, setReduceMotion] = useState(false);
+  const [playStartupIntro, setPlayStartupIntro] = useState(true);
   const [startWithWindows, setStartWithWindows] = useState(false);
   const [closeToTray, setCloseToTray] = useState(false);
   const [hideOnGameLaunch, setHideOnGameLaunch] = useState(false);
@@ -114,6 +115,7 @@ export function SettingsModal({
     setCoverCorners(a.coverCorners ?? "soft");
     setCoverShape(a.coverShape ?? "portrait");
     setReduceMotion(a.reduceMotion === true);
+    setPlayStartupIntro(s.playStartupIntro !== false);
     setStartWithWindows(s.startWithWindows === true);
     setCloseToTray(s.closeToTray === true);
     setHideOnGameLaunch(s.hideOnGameLaunch === true);
@@ -344,6 +346,14 @@ export function SettingsModal({
                       onChange={(e) => preview({ showStoreLabels: e.target.checked })}
                     />
                     Show store labels
+                  </label>
+                  <label className="toggle-row">
+                    <input
+                      type="checkbox"
+                      checked={playStartupIntro}
+                      onChange={(e) => setPlayStartupIntro(e.target.checked)}
+                    />
+                    Play startup animation
                   </label>
                   <label className="toggle-row">
                     <input
@@ -726,6 +736,7 @@ export function SettingsModal({
                   coverCorners,
                   coverShape,
                   reduceMotion,
+                  playStartupIntro,
                   startWithWindows,
                   closeToTray,
                   startInBackground: false,

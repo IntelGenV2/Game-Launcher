@@ -3,6 +3,8 @@
 !define LEGACY_UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${LEGACY_PRODUCT}"
 
 Var Studio256UpgradeDir
+Var Studio256ShortcutTarget
+Var Studio256FinishDesktopLink
 
 !macro NSIS_HOOK_PREINSTALL
   ; Tauri derives the NSIS registration from the product name. Reuse a verified
@@ -38,27 +40,54 @@ Var Studio256UpgradeDir
   ${EndIf}
 !macroend
 
-; Keep the shortcut's AppUserModelID and arguments, including on existing pins.
-!macro RefreshCartridgeIcon shortcut
-  ${If} ${FileExists} "${shortcut}"
-    !insertmacro IsShortcutTarget "${shortcut}" "$INSTDIR\${MAINBINARYNAME}.exe"
-    Pop $R0
-    ${If} $R0 = 1
-      !insertmacro ComHlpr_CreateInProcInstance ${CLSID_ShellLink} ${IID_IShellLink} r0 ""
-      ${If} $0 P<> 0
-        ${IUnknown::QueryInterface} $0 '("${IID_IPersistFile}", .r1)'
-        ${If} $1 P<> 0
-          ${IPersistFile::Load} $1 '("${shortcut}", ${STGM_READWRITE})'
-          ${IShellLink::SetIconLocation} $0 '(w "$INSTDIR\studio-256-cartridge.ico", i 0)'
-          ${IPersistFile::Save} $1 '("${shortcut}", 1)'
-          ${IUnknown::Release} $1 ""
-          System::Call 'shell32::SHChangeNotify(i 0x2000, i 0x1005, w "${shortcut}", p 0)'
-        ${EndIf}
-        ${IUnknown::Release} $0 ""
-      ${EndIf}
-    ${EndIf}
+!define STUDIO256_SHORTCUT_ICON "studio-256-cartridge-v2.ico"
+
+; Edit the loaded link so taskbar pins retain their arguments and AppUserModelID.
+Function Studio256RefreshLink
+  Pop $R6
+  IfFileExists "$R6" 0 done
+  !insertmacro ComHlpr_CreateInProcInstance ${CLSID_ShellLink} ${IID_IShellLink} r0 ".r3"
+  StrCmp $3 0 0 done
+  ${IUnknown::QueryInterface} $0 '("${IID_IPersistFile}", .r1)i.r3'
+  StrCmp $3 0 0 releaseLink
+  ${IPersistFile::Load} $1 '(w "$R6", ${STGM_READWRITE})i.r3'
+  StrCmp $3 0 0 releaseFile
+  ${IShellLink::GetPath} $0 '(w .r2, i ${NSIS_MAX_STRLEN}, p 0, i 0)i.r3'
+  StrCmp $3 0 0 releaseFile
+  StrCmp $2 $Studio256ShortcutTarget 0 releaseFile
+  ${IShellLink::SetIconLocation} $0 '(w "$INSTDIR\${STUDIO256_SHORTCUT_ICON}", i 0)i.r3'
+  StrCmp $3 0 0 releaseFile
+  ${IPersistFile::Save} $1 '(p 0, i 1)i.r3'
+  StrCmp $3 0 0 releaseFile
+  ; SHCNE_UPDATEITEM, SHCNF_PATHW | SHCNF_FLUSHNOWAIT.
+  System::Call 'shell32::SHChangeNotify(i 0x2000, i 0x2005, w "$R6", p 0)'
+  releaseFile:
+  ${IUnknown::Release} $1 ""
+  releaseLink:
+  ${IUnknown::Release} $0 ""
+  done:
+FunctionEnd
+
+Function Studio256RefreshFolder
+  Pop $R7
+  FindFirst $R8 $R9 "$R7\*.lnk"
+  StrCmp $R9 "" done
+  ${DoWhile} $R9 != ""
+    Push "$R7\$R9"
+    Call Studio256RefreshLink
+    FindNext $R8 $R9
+  ${Loop}
+  FindClose $R8
+  done:
+FunctionEnd
+
+; Tauri's Finish button can create or replace the desktop shortcut after POSTINSTALL.
+Function .onGUIEnd
+  ${If} $Studio256FinishDesktopLink != ""
+    Push "$Studio256FinishDesktopLink"
+    Call Studio256RefreshLink
   ${EndIf}
-!macroend
+FunctionEnd
 
 !macro NSIS_HOOK_POSTINSTALL
   ${If} $Studio256UpgradeDir != ""
@@ -68,13 +97,19 @@ Var Studio256UpgradeDir
     DeleteRegValue SHCTX "${LEGACY_APP_KEY}" ""
     DeleteRegKey /ifempty SHCTX "${LEGACY_APP_KEY}"
   ${EndIf}
-  !insertmacro RefreshCartridgeIcon "$SMPROGRAMS\${PRODUCTNAME}.lnk"
-  !insertmacro RefreshCartridgeIcon "$DESKTOP\${PRODUCTNAME}.lnk"
-  ; Older pins can have a custom filename. Match the target before writing.
-  FindFirst $R8 $R9 "$APPDATA\Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar\*.lnk"
-  ${DoWhile} $R9 != ""
-    !insertmacro RefreshCartridgeIcon "$APPDATA\Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar\$R9"
-    FindNext $R8 $R9
-  ${Loop}
-  FindClose $R8
+  StrCpy $Studio256ShortcutTarget "$INSTDIR\${MAINBINARYNAME}.exe"
+  Push "$SMPROGRAMS"
+  Call Studio256RefreshFolder
+  !if "${STARTMENUFOLDER}" != ""
+    Push "$SMPROGRAMS\$AppStartMenuFolder"
+    Call Studio256RefreshFolder
+  !endif
+  Push "$DESKTOP"
+  Call Studio256RefreshFolder
+  Push "$APPDATA\Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar"
+  Call Studio256RefreshFolder
+  ${IfNot} ${Silent}
+  ${AndIf} $PassiveMode != 1
+    StrCpy $Studio256FinishDesktopLink "$DESKTOP\${PRODUCTNAME}.lnk"
+  ${EndIf}
 !macroend

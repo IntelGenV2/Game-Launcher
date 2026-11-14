@@ -174,6 +174,7 @@ pub struct AppSettings {
     pub cover_corners: Option<String>,
     pub cover_shape: Option<String>,
     pub reduce_motion: Option<bool>,
+    pub play_startup_intro: Option<bool>,
     pub start_with_windows: Option<bool>,
     pub close_to_tray: Option<bool>,
     pub start_in_background: Option<bool>,

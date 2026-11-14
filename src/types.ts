@@ -121,6 +121,7 @@ export interface AppSettings {
   coverCorners: string | null;
   coverShape: string | null;
   reduceMotion: boolean | null;
+  playStartupIntro?: boolean | null;
   startWithWindows: boolean | null;
   closeToTray: boolean | null;
   startInBackground: boolean | null;

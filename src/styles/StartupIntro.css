@@ -18,15 +18,49 @@
   outline-offset: -3px;
 }
 
+.startup-art {
+  display: grid;
+  justify-items: center;
+  gap: clamp(14px, 2.5vh, 26px);
+  width: min(640px, 80vw, 95vh);
+}
+
 .startup-intro img {
-  width: min(640px, 80vw, 112vh);
+  width: 100%;
   height: auto;
   image-rendering: pixelated;
 }
 
-/* The 52-frame C64 opening plays once in 2080ms, then the library comes through. */
+.startup-wordmark {
+  display: block;
+  width: 65%;
+  overflow: visible;
+}
+
+.startup-word {
+  opacity: 0;
+  transform-box: fill-box;
+  transform-origin: center bottom;
+}
+
+.startup-word-name { fill: var(--text); }
+.startup-word-number { fill: var(--accent-hot); }
+.startup-word-edge { fill: color-mix(in srgb, var(--accent) 47%, var(--bg-deep)); }
+
+.is-playing .startup-word {
+  animation: startup-type-in 440ms cubic-bezier(.16,.85,.24,1) 1320ms both;
+}
+
+.is-playing .startup-word-number { animation-delay: 1500ms; }
+
+@keyframes startup-type-in {
+  from { opacity: 0; transform: translateY(8px) scaleY(.65); }
+  to { opacity: 1; transform: translateY(0) scaleY(1); }
+}
+
+/* The trace animation runs for 3040ms, through the end of this crossfade. */
 .startup-intro.is-playing {
-  animation: startup-reveal 240ms ease-out 2080ms forwards;
+  animation: startup-reveal 240ms ease-out 2700ms forwards;
 }
 
 @keyframes startup-reveal {
