@@ -1,5 +1,5 @@
 use crate::models::{
-    AppSettings, DailyPlaytime, DiscoveredGame, DuplicateGroup, Game, GameGroup, GameStats,
+    AppSettings, DailyPlaytime, DiscoveredGame, DuplicateGroup, Game, GameCopy, GameGroup, GameStats,
     LibraryOverview, PlaySession, Store, TopPlayedGame, YearInReview,
 };
 use anyhow::{Context, Result};
@@ -43,7 +43,7 @@ const GAME_COLS: &str = "id, name, store, launch_target, install_path, cover_url
     cover_source, favorite, hidden, missing, playtime_minutes, last_played_at, date_added,
     steam_app_id, genre, notes, developer, publisher, release_year, description, genres_json,
     hltb_main, hltb_extra, hltb_completionist, logo_path, launch_args, working_dir, run_as_admin,
-    config_path, mod_manager_path, save_folder";
+    config_path, mod_manager_path, save_folder, pinned, preferred_copy_id";
 
 /// Library grid payload: skip Wikipedia dumps, notes, and launch-only fields.
 const LIST_GAME_COLS: &str = "id, name, store, launch_target, install_path, cover_url, cover_path,
@@ -51,7 +51,7 @@ const LIST_GAME_COLS: &str = "id, name, store, launch_target, install_path, cove
     steam_app_id, genre, NULL as notes, developer, publisher, release_year, NULL as description,
     genres_json, NULL as hltb_main, NULL as hltb_extra, NULL as hltb_completionist,
     NULL as logo_path, NULL as launch_args, NULL as working_dir, run_as_admin, NULL as config_path,
-    NULL as mod_manager_path, NULL as save_folder";
+    NULL as mod_manager_path, save_folder, pinned, preferred_copy_id";
 
 pub struct Database {
     conn: Connection,
@@ -204,6 +204,10 @@ impl Database {
                 tag TEXT NOT NULL,
                 PRIMARY KEY (game_id, tag)
             );
+            CREATE TABLE IF NOT EXISTS game_links (
+                source_id TEXT PRIMARY KEY,
+                game_id TEXT NOT NULL
+            );
             "#,
         )?;
         // Migrations for existing DBs
@@ -234,9 +238,27 @@ impl Database {
             "ALTER TABLE games ADD COLUMN save_folder TEXT",
             "ALTER TABLE games ADD COLUMN import_playtime INTEGER NOT NULL DEFAULT 1",
             "ALTER TABLE games ADD COLUMN cover_source TEXT",
+            "ALTER TABLE games ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE games ADD COLUMN preferred_copy_id TEXT",
+            "ALTER TABLE sessions ADD COLUMN last_seen_at TEXT",
+            "ALTER TABLE sessions ADD COLUMN source_id TEXT",
         ] {
             let _ = self.conn.execute(col, []);
         }
+        // Preserve both old collections as one pinned set. Keep the legacy field in sync
+        // so older imports/backups and API clients cannot recreate a separate favorites list.
+        self.conn.execute_batch(
+            r#"
+            UPDATE games SET pinned=MAX(pinned,favorite), favorite=MAX(pinned,favorite)
+              WHERE pinned <> favorite;
+            CREATE TRIGGER IF NOT EXISTS game_pin_insert AFTER INSERT ON games
+              WHEN NEW.pinned <> NEW.favorite
+              BEGIN UPDATE games SET pinned=MAX(NEW.pinned,NEW.favorite), favorite=MAX(NEW.pinned,NEW.favorite) WHERE id=NEW.id; END;
+            CREATE TRIGGER IF NOT EXISTS game_pin_update AFTER UPDATE OF pinned,favorite ON games
+              WHEN NEW.pinned <> NEW.favorite
+              BEGIN UPDATE games SET pinned=MAX(NEW.pinned,NEW.favorite), favorite=MAX(NEW.pinned,NEW.favorite) WHERE id=NEW.id; END;
+            "#,
+        )?;
         let _ = self.conn.execute_batch(
             r#"
             CREATE TABLE IF NOT EXISTS game_tags (
@@ -278,6 +300,9 @@ impl Database {
             cover_path: row.get("cover_path")?,
             cover_source: row.get("cover_source").unwrap_or(None),
             favorite: row.get::<_, i64>("favorite")? != 0,
+            pinned: row.get::<_, i64>("pinned").unwrap_or(0) != 0,
+            copies: Vec::new(),
+            preferred_copy_id: row.get("preferred_copy_id").unwrap_or(None),
             hidden: row.get::<_, i64>("hidden")? != 0,
             missing: row.get::<_, i64>("missing")? != 0,
             playtime_minutes: row.get("playtime_minutes")?,
@@ -307,9 +332,9 @@ impl Database {
 
     pub fn list_games(&self, include_hidden: bool) -> Result<Vec<Game>> {
         let sql = if include_hidden {
-            format!("SELECT {LIST_GAME_COLS} FROM games ORDER BY name COLLATE NOCASE")
+            format!("SELECT {LIST_GAME_COLS} FROM games WHERE id NOT IN (SELECT source_id FROM game_links) ORDER BY name COLLATE NOCASE")
         } else {
-            format!("SELECT {LIST_GAME_COLS} FROM games WHERE hidden = 0 ORDER BY name COLLATE NOCASE")
+            format!("SELECT {LIST_GAME_COLS} FROM games WHERE hidden = 0 AND id NOT IN (SELECT source_id FROM game_links) ORDER BY name COLLATE NOCASE")
         };
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map([], Self::map_game)?;
@@ -319,6 +344,7 @@ impl Database {
         }
         self.attach_tags(&mut games)?;
         for g in &mut games {
+            self.attach_copies(g)?;
             g.description = None;
             g.notes = None;
             g.hltb_main = None;
@@ -337,6 +363,7 @@ impl Database {
         let mut game = rows.next().transpose()?;
         if let Some(g) = game.as_mut() {
             g.tags = self.tags_for(&g.id)?;
+            self.attach_copies(g)?;
             g.description = clip_text(g.description.take(), 800);
         }
         Ok(game)
@@ -516,7 +543,7 @@ impl Database {
 
     pub fn toggle_favorite(&self, id: &str) -> Result<Game> {
         self.conn.execute(
-            "UPDATE games SET favorite = CASE favorite WHEN 1 THEN 0 ELSE 1 END WHERE id = ?1",
+            "UPDATE games SET pinned = CASE pinned WHEN 1 THEN 0 ELSE 1 END, favorite = CASE pinned WHEN 1 THEN 0 ELSE 1 END WHERE id = ?1",
             params![id],
         )?;
         self.get_game(id)?
@@ -569,14 +596,6 @@ impl Database {
         self.conn.execute(
             "UPDATE games SET cover_path = NULL WHERE id = ?1",
             params![id],
-        )?;
-        Ok(())
-    }
-
-    pub fn clear_all_covers(&self) -> Result<()> {
-        self.conn.execute(
-            "UPDATE games SET cover_path = NULL, cover_url = NULL, cover_source = NULL, logo_path = NULL",
-            [],
         )?;
         Ok(())
     }
@@ -656,46 +675,112 @@ impl Database {
         Ok(())
     }
 
-    pub fn record_launch(&self, id: &str) -> Result<()> {
+    pub fn record_launch(&self, id: &str, source_id: &str) -> Result<()> {
         let now = Utc::now().to_rfc3339();
-        self.conn.execute(
-            "UPDATE games SET last_played_at = ?1 WHERE id = ?2",
-            params![now, id],
-        )?;
-        self.conn.execute(
-            "INSERT INTO sessions (game_id, started_at) VALUES (?1, ?2)",
-            params![id, now],
-        )?;
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute("UPDATE games SET last_played_at=?1 WHERE id=?2 OR id=?3", params![now, id, source_id])?;
+        tx.execute("INSERT INTO sessions (game_id, source_id, started_at, last_seen_at) VALUES (?1,?2,?3,?3)", params![id, source_id, now])?;
+        tx.commit()?;
         Ok(())
     }
 
-    pub fn end_session_and_add_playtime(&self, id: &str, minutes: i64) -> Result<Game> {
-        let minutes = minutes.clamp(0, MAX_SESSION_MINUTES);
-        let started: Option<String> = self
-            .conn
-            .query_row(
-                "SELECT started_at FROM sessions WHERE game_id = ?1 AND ended_at IS NULL ORDER BY id DESC LIMIT 1",
-                params![id],
-                |row| row.get(0),
-            )
-            .ok();
-        let ended_at = started
-            .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
-            .map(|s| (s.with_timezone(&Utc) + Duration::minutes(minutes)).to_rfc3339())
-            .unwrap_or_else(|| Utc::now().to_rfc3339());
-        let now = Utc::now().to_rfc3339();
-        self.conn.execute(
-            "UPDATE sessions SET ended_at = ?1 WHERE id = (
-                SELECT id FROM sessions WHERE game_id = ?2 AND ended_at IS NULL ORDER BY id DESC LIMIT 1
-            )",
-            params![ended_at, id],
-        )?;
-        self.conn.execute(
-            "UPDATE games SET playtime_minutes = playtime_minutes + ?1, last_played_at = ?2 WHERE id = ?3",
-            params![minutes, now, id],
-        )?;
-        self.get_game(id)?
-            .ok_or_else(|| anyhow::anyhow!("game not found"))
+    pub fn heartbeat_session(&self, id: &str) -> Result<()> {
+        self.conn.execute("UPDATE sessions SET last_seen_at=?1 WHERE game_id=?2 AND ended_at IS NULL", params![Utc::now().to_rfc3339(), id])?;
+        Ok(())
+    }
+
+    /// Persist only time observed by the backend, never time inferred from window focus.
+    pub fn finish_session(&self, id: &str) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        let mut stmt = tx.prepare("SELECT id, started_at, COALESCE(last_seen_at, started_at), COALESCE(source_id, game_id) FROM sessions WHERE game_id=?1 AND ended_at IS NULL")?;
+        let rows: Vec<(i64,String,String,String)> = stmt.query_map(params![id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?.collect::<rusqlite::Result<_>>()?;
+        drop(stmt);
+        for (session, started, ended, source) in rows {
+            let minutes = session_duration_minutes(&started, Some(&ended));
+            tx.execute("UPDATE sessions SET ended_at=?1 WHERE id=?2 AND ended_at IS NULL", params![ended, session])?;
+            tx.execute("UPDATE games SET playtime_minutes=playtime_minutes+?1 WHERE id=?2", params![minutes, source])?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn recover_sessions(&self) -> Result<()> {
+        let mut stmt = self.conn.prepare("SELECT DISTINCT game_id FROM sessions WHERE ended_at IS NULL")?;
+        let ids: Vec<String> = stmt.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+        drop(stmt);
+        for id in ids { self.finish_session(&id)?; }
+        Ok(())
+    }
+
+    pub fn set_pinned(&self, id: &str, pinned: bool) -> Result<Game> {
+        self.conn.execute("UPDATE games SET pinned=?1, favorite=?1 WHERE id=?2", params![pinned, id])?;
+        self.get_game(id)?.ok_or_else(|| anyhow::anyhow!("game not found"))
+    }
+
+    pub fn set_preferred_copy(&self, id: &str, source_id: &str) -> Result<Game> {
+        let game = self.get_game(id)?.ok_or_else(|| anyhow::anyhow!("game not found"))?;
+        anyhow::ensure!(game.copies.iter().any(|c| c.id == source_id), "That copy does not belong to this game");
+        self.conn.execute("UPDATE games SET preferred_copy_id=?1 WHERE id=?2", params![source_id, id])?;
+        self.get_game(id)?.ok_or_else(|| anyhow::anyhow!("game not found"))
+    }
+
+    fn attach_copies(&self, game: &mut Game) -> Result<()> {
+        let mut stmt = self.conn.prepare("SELECT id, store, missing, install_path, playtime_minutes, last_played_at FROM games WHERE id=?1 OR id IN (SELECT source_id FROM game_links WHERE game_id=?1) ORDER BY store,id")?;
+        let rows = stmt.query_map(params![game.id], |r| Ok((GameCopy {
+            id:r.get(0)?, store:Store::from_str(&r.get::<_,String>(1)?).unwrap_or(Store::Manual),
+            missing:r.get::<_,i64>(2)? != 0, install_path:r.get(3)?, playtime_minutes:r.get(4)?,
+        }, r.get::<_,Option<String>>(5)?)))?;
+        let mut copies = Vec::new();
+        let mut baseline = 0;
+        let mut tracked_total = 0;
+        for row in rows {
+            let (copy, last) = row?;
+            if last > game.last_played_at { game.last_played_at = last; }
+            let mut sessions = self.conn.prepare("SELECT started_at, ended_at FROM sessions WHERE COALESCE(source_id,game_id)=?1 AND ended_at IS NOT NULL")?;
+            let times = sessions.query_map(params![copy.id], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))?;
+            let mut tracked = 0;
+            for time in times { let (start,end) = time?; tracked += session_duration_minutes(&start, Some(&end)); }
+            // Imported store histories may overlap. Keep the largest baseline; local sessions are distinct.
+            baseline = baseline.max((copy.playtime_minutes - tracked).max(0));
+            tracked_total += tracked;
+            copies.push(copy);
+        }
+        game.missing = copies.iter().all(|c| c.missing);
+        game.playtime_minutes = baseline + tracked_total;
+        game.copies = copies;
+        Ok(())
+    }
+
+    pub fn snapshot(&self, dest: &Path) -> Result<()> {
+        self.conn.execute("VACUUM INTO ?1", params![dest.to_string_lossy().to_string()])?;
+        let snapshot = Connection::open(dest)?;
+        snapshot.execute_batch("PRAGMA secure_delete=ON")?;
+        snapshot.execute("DELETE FROM settings WHERE key IN ('steam_grid_db_api_key','twitch_client_id','twitch_client_secret')", [])?;
+        snapshot.execute_batch("VACUUM")?;
+        Ok(())
+    }
+
+    pub fn relocate_art(&self, root: &Path) -> Result<()> {
+        for column in ["cover_path", "logo_path"] {
+            let mut stmt = self.conn.prepare(&format!("SELECT id,{column} FROM games WHERE {column} IS NOT NULL"))?;
+            let paths = stmt.query_map([], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            drop(stmt);
+            for (id,path) in paths {
+                let name = path.rsplit(['/', '\\']).next().unwrap_or("");
+                anyhow::ensure!(!name.is_empty() && !name.contains(':') && name!="..", "Invalid artwork path in backup");
+                self.conn.execute(&format!("UPDATE games SET {column}=?1 WHERE id=?2"),params![root.join("covers").join(name).to_string_lossy().to_string(),id])?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn clear_art(&self, custom: bool) -> Result<Vec<String>> {
+        let condition = if custom { "cover_source IN ('Custom','Local')" } else { "COALESCE(cover_source,'') NOT IN ('Custom','Local','Install folder')" };
+        let mut stmt = self.conn.prepare(&format!("SELECT cover_path FROM games WHERE {condition} AND cover_path IS NOT NULL"))?;
+        let paths = stmt.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<Vec<String>>>()?;
+        drop(stmt);
+        self.conn.execute(&format!("UPDATE games SET cover_path=NULL, cover_url=NULL, cover_source=NULL WHERE {condition}"), [])?;
+        Ok(paths)
     }
 
     pub fn game_stats(&self, game_id: &str) -> Result<GameStats> {
@@ -732,7 +817,7 @@ impl Database {
             if let Ok(started) = chrono::DateTime::parse_from_rfc3339(&s.started_at) {
                 let day = started.with_timezone(&Utc).format("%Y-%m-%d").to_string();
                 if let Some(slot) = daily.get_mut(&day) {
-                    *slot += s.duration_minutes.max(1);
+                    *slot += s.duration_minutes;
                 }
             }
         }
@@ -773,6 +858,7 @@ impl Database {
                 "steam_grid_db_api_key" => settings.steam_grid_db_api_key = Some(v),
                 "sort_by" => settings.sort_by = Some(v),
                 "theme" => settings.theme = Some(v),
+                "translucency" => settings.translucency = v.parse::<f64>().ok(),
                 "card_scale" => {
                     if let Ok(n) = v.parse::<f64>() {
                         settings.card_scale = Some(n);
@@ -793,6 +879,12 @@ impl Database {
                 "hide_on_game_launch" => {
                     settings.hide_on_game_launch = Some(v == "1" || v == "true")
                 }
+                "twitch_client_id" => settings.twitch_client_id = Some(v),
+                "twitch_client_secret" => settings.twitch_client_secret = Some(v),
+                "show_tools" => settings.show_tools = Some(v == "1"),
+                "automatic_backups" => settings.automatic_backups = Some(v == "1"),
+                "library_layout" => settings.library_layout = Some(v),
+                "saved_views" => settings.saved_views = Some(v),
                 _ => {}
             }
         }
@@ -824,6 +916,12 @@ impl Database {
                 "INSERT INTO settings (key, value) VALUES ('theme', ?1)
                  ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 params![theme],
+            )?;
+        }
+        if let Some(value) = settings.translucency {
+            self.conn.execute(
+                "INSERT INTO settings (key, value) VALUES ('translucency', ?1) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![value.clamp(0.0, 70.0).to_string()],
             )?;
         }
         if let Some(scale) = settings.card_scale {
@@ -868,6 +966,15 @@ impl Database {
         self.upsert_bool_setting("close_to_tray", settings.close_to_tray)?;
         self.upsert_bool_setting("start_in_background", settings.start_in_background)?;
         self.upsert_bool_setting("hide_on_game_launch", settings.hide_on_game_launch)?;
+        self.upsert_bool_setting("show_tools", settings.show_tools)?;
+        self.upsert_bool_setting("automatic_backups", settings.automatic_backups)?;
+        self.upsert_optional_setting("library_layout", settings.library_layout.as_deref())?;
+        self.upsert_optional_setting("saved_views", settings.saved_views.as_deref())?;
+        self.upsert_optional_setting("twitch_client_id", settings.twitch_client_id.as_deref())?;
+        self.upsert_optional_setting(
+            "twitch_client_secret",
+            settings.twitch_client_secret.as_deref(),
+        )?;
         Ok(())
     }
 
@@ -878,6 +985,19 @@ impl Database {
                  ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 params![key, if v { "1" } else { "0" }],
             )?;
+        }
+        Ok(())
+    }
+
+    fn upsert_optional_setting(&self, key: &str, value: Option<&str>) -> Result<()> {
+        if let Some(v) = value.map(str::trim).filter(|s| !s.is_empty()) {
+            self.conn.execute(
+                "INSERT INTO settings (key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![key, v],
+            )?;
+        } else {
+            self.conn.execute("DELETE FROM settings WHERE key = ?1", params![key])?;
         }
         Ok(())
     }
@@ -1270,10 +1390,13 @@ impl Database {
                 favorite, hidden, missing, playtime_minutes, last_played_at, date_added,
                 steam_app_id, genre, notes, developer, publisher, release_year, description,
                 genres_json, hltb_main, hltb_extra, hltb_completionist, logo_path,
-                launch_args, working_dir, run_as_admin, config_path, mod_manager_path, save_folder
+                launch_args, working_dir, run_as_admin, config_path, mod_manager_path, save_folder,
+                pinned, preferred_copy_id, path_override, import_playtime
             ) VALUES (
                 ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,
-                ?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32
+                ?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32,?33,?34,
+                COALESCE((SELECT path_override FROM games WHERE id=?1),0),
+                COALESCE((SELECT import_playtime FROM games WHERE id=?1),1)
             )"#,
             params![
                 game.id,
@@ -1287,7 +1410,7 @@ impl Database {
                 game.favorite as i64,
                 game.hidden as i64,
                 game.missing as i64,
-                game.playtime_minutes,
+                game.copies.iter().find(|c| c.id == game.id).map(|c| c.playtime_minutes).unwrap_or(game.playtime_minutes),
                 game.last_played_at,
                 game.date_added,
                 game.steam_app_id,
@@ -1308,6 +1431,8 @@ impl Database {
                 game.config_path,
                 game.mod_manager_path,
                 game.save_folder,
+                game.pinned,
+                game.preferred_copy_id,
             ],
         )?;
         self.set_tags(&game.id, &game.tags)
@@ -1317,6 +1442,8 @@ impl Database {
         if self.get_game(id)?.is_some() {
             return Ok(());
         }
+        self.conn.execute("UPDATE sessions SET game_id=COALESCE(source_id,game_id) WHERE game_id=?1 AND source_id != ?1", params![id])?;
+        self.conn.execute("DELETE FROM game_links WHERE game_id=?1 OR source_id=?1", params![id])?;
         self.conn
             .execute("DELETE FROM sessions WHERE game_id = ?1", params![id])?;
         self.conn
@@ -1324,99 +1451,28 @@ impl Database {
         Ok(())
     }
 
+    /// Link installations without deleting store identities or launch targets.
     pub fn merge_games(&self, keep_id: &str, source_ids: &[String]) -> Result<Game> {
-        let mut keep = self
-            .get_game(keep_id)?
-            .ok_or_else(|| anyhow::anyhow!("Keep game not found"))?;
+        anyhow::ensure!(self.get_game(keep_id)?.is_some(), "Game not found");
+        let tx = self.conn.unchecked_transaction()?;
+        let linked: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM game_links WHERE source_id=?1)", params![keep_id], |r| r.get(0))?;
+        anyhow::ensure!(!linked, "Choose the main game card");
         for sid in source_ids {
-            if sid == keep_id {
-                continue;
-            }
-            let Some(src) = self.get_game(sid)? else {
-                continue;
-            };
-            keep.playtime_minutes += src.playtime_minutes;
-            keep.favorite = keep.favorite || src.favorite;
-            if keep.notes.as_ref().map(|s| s.trim().is_empty()).unwrap_or(true) {
-                keep.notes = src.notes.clone();
-            } else if let Some(n) = src.notes.filter(|s| !s.trim().is_empty()) {
-                let cur = keep.notes.clone().unwrap_or_default();
-                keep.notes = Some(format!("{cur}\n\n{n}"));
-            }
-            if keep.developer.is_none() {
-                keep.developer = src.developer.clone();
-            }
-            if keep.publisher.is_none() {
-                keep.publisher = src.publisher.clone();
-            }
-            if keep.release_year.is_none() {
-                keep.release_year = src.release_year;
-            }
-            if keep.description.is_none() {
-                keep.description = src.description.clone();
-            }
-            if keep.cover_path.is_none() {
-                keep.cover_path = src.cover_path.clone();
-                if keep.cover_source.is_none() {
-                    keep.cover_source = src.cover_source.clone();
-                }
-            }
-            if keep.logo_path.is_none() {
-                keep.logo_path = src.logo_path.clone();
-            }
-            if keep.steam_app_id.is_none() {
-                keep.steam_app_id = src.steam_app_id.clone();
-            }
-            if keep.hltb_main.is_none() {
-                keep.hltb_main = src.hltb_main;
-            }
-            if keep.config_path.is_none() {
-                keep.config_path = src.config_path.clone();
-            }
-            if keep.mod_manager_path.is_none() {
-                keep.mod_manager_path = src.mod_manager_path.clone();
-            }
-            if keep.save_folder.is_none() {
-                keep.save_folder = src.save_folder.clone();
-            }
-            for g in src.genres {
-                if !keep.genres.iter().any(|x| x.eq_ignore_ascii_case(&g)) {
-                    keep.genres.push(g);
-                }
-            }
-            for t in src.tags {
-                if !keep.tags.iter().any(|x| x.eq_ignore_ascii_case(&t)) {
-                    keep.tags.push(t);
-                }
-            }
-            if let (Some(a), Some(b)) = (&keep.last_played_at, &src.last_played_at) {
-                if b > a {
-                    keep.last_played_at = src.last_played_at.clone();
-                }
-            } else if keep.last_played_at.is_none() {
-                keep.last_played_at = src.last_played_at.clone();
-            }
-            self.conn.execute(
-                "UPDATE sessions SET game_id = ?1 WHERE game_id = ?2",
-                params![keep_id, sid],
-            )?;
-            self.conn.execute(
-                "UPDATE game_group_members SET game_id = ?1 WHERE game_id = ?2",
-                params![keep_id, sid],
-            )?;
-            // unique constraint might fail if keep already in group
-            let _ = self.conn.execute(
-                "DELETE FROM game_group_members WHERE game_id = ?1",
-                params![sid],
-            );
-            self.remove_game(sid)?;
+            if sid == keep_id { continue; }
+            let exists: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM games WHERE id=?1)", params![sid], |r| r.get(0))?;
+            anyhow::ensure!(exists, "A selected copy no longer exists");
+            let linked: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM game_links WHERE source_id=?1)", params![sid], |r| r.get(0))?;
+            anyhow::ensure!(!linked, "That copy is already linked");
+            tx.execute("UPDATE games SET favorite=MAX(favorite,(SELECT favorite FROM games WHERE id=?2)), pinned=MAX(pinned,(SELECT pinned FROM games WHERE id=?2)), notes=CASE WHEN (SELECT notes FROM games WHERE id=?2) IS NULL THEN notes WHEN notes IS NULL THEN (SELECT notes FROM games WHERE id=?2) ELSE notes || char(10) || char(10) || (SELECT notes FROM games WHERE id=?2) END WHERE id=?1", params![keep_id,sid])?;
+            tx.execute("INSERT OR IGNORE INTO game_tags(game_id,tag) SELECT ?1,tag FROM game_tags WHERE game_id=?2", params![keep_id,sid])?;
+            tx.execute("INSERT OR IGNORE INTO game_group_members(group_id,game_id,sort_order) SELECT group_id,?1,sort_order FROM game_group_members WHERE game_id=?2", params![keep_id,sid])?;
+            tx.execute("DELETE FROM game_group_members WHERE game_id=?1", params![sid])?;
+            tx.execute("UPDATE sessions SET source_id=COALESCE(source_id,game_id),game_id=?1 WHERE game_id=?2", params![keep_id,sid])?;
+            tx.execute("UPDATE game_links SET game_id=?1 WHERE game_id=?2", params![keep_id,sid])?;
+            tx.execute("INSERT INTO game_links(source_id,game_id) VALUES (?1,?2)", params![sid,keep_id])?;
         }
-        keep.genre = if keep.genres.is_empty() {
-            keep.genre.clone()
-        } else {
-            Some(keep.genres.join(", "))
-        };
-        self.insert_game_full(&keep)
+        tx.commit()?;
+        self.get_game(keep_id)?.ok_or_else(|| anyhow::anyhow!("game not found"))
     }
 
     pub fn suggest_duplicates(&self) -> Result<Vec<DuplicateGroup>> {
@@ -1629,6 +1685,125 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
 
 pub fn default_db_path() -> PathBuf {
     app_data_dir().join("library.db")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn library() -> Database {
+        let db = Database { conn: Connection::open_in_memory().unwrap() };
+        db.migrate().unwrap();
+        db
+    }
+
+    #[test]
+    fn old_favorites_and_pins_merge_without_repinning_after_restart() {
+        let db = library();
+        for id in ["favorite", "pin", "neither"] { db.add_manual_game(id, id, "game.exe", None).unwrap(); }
+        db.conn.execute_batch("DROP TRIGGER game_pin_insert; DROP TRIGGER game_pin_update;
+          UPDATE games SET favorite=1 WHERE id='favorite';
+          UPDATE games SET pinned=1 WHERE id='pin';").unwrap();
+        db.migrate().unwrap();
+        for id in ["favorite", "pin"] {
+            let game = db.get_game(id).unwrap().unwrap();
+            assert!(game.pinned && game.favorite);
+        }
+        assert!(!db.get_game("neither").unwrap().unwrap().pinned);
+        db.set_pinned("favorite", false).unwrap();
+        db.migrate().unwrap();
+        let game = db.get_game("favorite").unwrap().unwrap();
+        assert!(!game.pinned && !game.favorite);
+        // Legacy import updates and the old toggle endpoint refer to the same collection.
+        db.conn.execute("UPDATE games SET favorite=1 WHERE id='neither'", []).unwrap();
+        assert!(db.get_game("neither").unwrap().unwrap().pinned);
+        let game = db.toggle_favorite("neither").unwrap();
+        assert!(!game.pinned && !game.favorite);
+    }
+
+    #[test]
+    fn translucency_persists_and_legacy_settings_remain_readable() {
+        let db = library();
+        assert_eq!(db.get_settings().unwrap().translucency, None);
+        let mut settings = db.get_settings().unwrap();
+        settings.translucency = Some(45.0);
+        db.save_settings(&settings).unwrap();
+        assert_eq!(db.get_settings().unwrap().translucency, Some(45.0));
+        settings.translucency = Some(120.0);
+        db.save_settings(&settings).unwrap();
+        assert_eq!(db.get_settings().unwrap().translucency, Some(70.0));
+    }
+
+    #[test]
+    fn interrupted_sessions_use_last_observation_and_finish_once() {
+        let db = library();
+        db.add_manual_game("a", "Game", "game.exe", None).unwrap();
+        db.record_launch("a", "a").unwrap();
+        db.conn.execute("UPDATE sessions SET started_at='2026-01-01T10:00:00Z', last_seen_at='2026-01-01T10:07:00Z'", []).unwrap();
+        db.recover_sessions().unwrap();
+        db.finish_session("a").unwrap();
+        assert_eq!(db.get_game("a").unwrap().unwrap().playtime_minutes, 7);
+        let end: String = db.conn.query_row("SELECT ended_at FROM sessions", [], |r|r.get(0)).unwrap();
+        assert_eq!(end, "2026-01-01T10:07:00Z");
+    }
+
+    #[test]
+    fn linked_copies_survive_rescan_and_keep_distinct_local_sessions() {
+        let db = library();
+        let discovered = |id: &str, store: Store, target: &str| DiscoveredGame {
+            id:id.into(), name:"Example".into(), store, launch_target:target.into(),
+            install_path:None, steam_app_id:None, playtime_minutes:Some(100),
+        };
+        db.upsert_discovered(&[discovered("a", Store::Steam, "123"), discovered("b", Store::Epic, "epic://game")]).unwrap();
+        db.set_pinned("b", true).unwrap();
+        db.set_tags("b", &["Co-op".into()]).unwrap();
+        db.set_notes("b", "Keep this note").unwrap();
+        db.record_launch("b", "b").unwrap();
+        db.conn.execute("UPDATE sessions SET started_at='2026-01-01T10:00:00Z', last_seen_at='2026-01-01T10:10:00Z'", []).unwrap();
+        db.finish_session("b").unwrap();
+        let linked = db.merge_games("a", &["b".into()]).unwrap();
+        assert_eq!(linked.playtime_minutes, 110);
+        assert_eq!(linked.copies.len(), 2);
+        assert!(linked.pinned);
+        assert_eq!(linked.tags, vec!["Co-op"]);
+        assert_eq!(linked.notes.as_deref(), Some("Keep this note"));
+        db.set_preferred_copy("a", "b").unwrap();
+        assert!(db.set_preferred_copy("a", "unrelated").is_err());
+        db.upsert_discovered(&[discovered("b", Store::Epic, "epic://game")]).unwrap();
+        let games = db.list_games(false).unwrap();
+        assert_eq!(games.len(), 1);
+        assert!(!games[0].missing);
+        assert_eq!(games[0].preferred_copy_id.as_deref(), Some("b"));
+        assert!(games[0].copies.iter().find(|c|c.id=="a").unwrap().missing);
+        assert_eq!(db.get_game("b").unwrap().unwrap().launch_target, "epic://game");
+        assert_eq!(db.game_stats("a").unwrap().sessions.len(), 1);
+    }
+
+    #[test]
+    fn invalid_link_batch_rolls_back_all_changes() {
+        let db = library();
+        for id in ["a", "b"] { db.add_manual_game(id, id, "game.exe", None).unwrap(); }
+        assert!(db.merge_games("a", &["b".into(), "missing".into()]).is_err());
+        assert_eq!(db.list_games(false).unwrap().len(), 2);
+        assert_eq!(db.get_game("a").unwrap().unwrap().copies.len(), 1);
+    }
+
+    #[test]
+    fn refreshing_downloads_preserves_custom_art() {
+        let db = library();
+        for id in ["custom", "download", "picked", "installed"] { db.add_manual_game(id, id, "game.exe", None).unwrap(); }
+        db.conn.execute("UPDATE games SET cover_source='Custom',cover_path='custom.png' WHERE id='custom'", []).unwrap();
+        db.conn.execute("UPDATE games SET cover_source='Steam',cover_path='download.png' WHERE id='download'", []).unwrap();
+        db.conn.execute("UPDATE games SET cover_source='Local',cover_path='picked.png' WHERE id='picked'", []).unwrap();
+        db.conn.execute("UPDATE games SET cover_source='Install folder',cover_path='installed.png' WHERE id='installed'", []).unwrap();
+        assert_eq!(db.clear_art(false).unwrap(), vec!["download.png"]);
+        assert_eq!(db.get_game("custom").unwrap().unwrap().cover_path.as_deref(), Some("custom.png"));
+        assert_eq!(db.get_game("picked").unwrap().unwrap().cover_path.as_deref(), Some("picked.png"));
+        let mut removed = db.clear_art(true).unwrap();
+        removed.sort();
+        assert_eq!(removed, vec!["custom.png", "picked.png"]);
+        assert_eq!(db.get_game("installed").unwrap().unwrap().cover_path.as_deref(), Some("installed.png"));
+    }
 }
 
 pub fn covers_dir() -> PathBuf {

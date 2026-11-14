@@ -58,7 +58,7 @@ export function CoverImg({
     }
     const el = wrapRef.current;
     if (!el) return;
-    const root = el.closest(".main") ?? document.querySelector(".main");
+    const root = el.closest(".main");
     const io = new IntersectionObserver(([entry]) => {
       if (
         !entry.isIntersecting &&

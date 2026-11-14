@@ -1,4 +1,5 @@
 import { useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { Game } from "../types";
 import { CoverImg } from "./CoverImg";
 
@@ -24,18 +25,19 @@ export function FlyCover({ fly, onDone }: { fly: FlyOrigin; onDone: () => void }
       doneRef.current();
     };
 
-    const el = document.querySelector(".detail-cover");
-    if (!el) {
-      finish();
-      return;
-    }
-    setTo(el.getBoundingClientRect());
-    const id = requestAnimationFrame(() => {
-      requestAnimationFrame(() => setOn(true));
+    setOn(false);
+    // Measure after the detail page has reset its scroll position and laid out.
+    let frame = requestAnimationFrame(() => {
+      frame = requestAnimationFrame(() => {
+        const el = document.querySelector(".detail-cover");
+        if (!el) { finish(); return; }
+        setTo(el.getBoundingClientRect());
+        frame = requestAnimationFrame(() => setOn(true));
+      });
     });
-    const timeout = window.setTimeout(finish, 500);
+    const timeout = window.setTimeout(finish, 800);
     return () => {
-      cancelAnimationFrame(id);
+      cancelAnimationFrame(frame);
       window.clearTimeout(timeout);
     };
   }, [fly.game.id]);
@@ -46,7 +48,7 @@ export function FlyCover({ fly, onDone }: { fly: FlyOrigin; onDone: () => void }
   const sx = fly.from.width ? to.width / fly.from.width : 1;
   const sy = fly.from.height ? to.height / fly.from.height : 1;
 
-  return (
+  return createPortal(
     <div
       className={`fly-cover${on ? " fly-on" : ""}`}
       style={{
@@ -64,6 +66,6 @@ export function FlyCover({ fly, onDone }: { fly: FlyOrigin; onDone: () => void }
       }}
     >
       <CoverImg game={fly.game} override={fly.src} loading="eager" skipShapeCheck />
-    </div>
+    </div>, document.body
   );
 }

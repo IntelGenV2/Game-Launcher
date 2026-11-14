@@ -56,6 +56,10 @@ export interface Game {
   coverPath: string | null;
   coverSource?: string | null;
   favorite: boolean;
+  pinned?: boolean;
+  copies?: GameCopy[];
+  preferredCopyId?: string | null;
+  launchStatus?: LaunchStatus;
   hidden: boolean;
   missing: boolean;
   playtimeMinutes: number;
@@ -85,7 +89,6 @@ export function asLibraryGame(game: Game): Game {
     description: null,
     launchArgs: null,
     workingDir: null,
-    saveFolder: null,
     logoPath: null,
   };
 }
@@ -110,6 +113,7 @@ export interface AppSettings {
   sortBy: string | null;
   theme: string | null;
   cardScale: number | null;
+  translucency?: number | null;
   libraryOrder: string | null;
   showTitles: boolean | null;
   showStoreLabels: boolean | null;
@@ -121,6 +125,47 @@ export interface AppSettings {
   closeToTray: boolean | null;
   startInBackground: boolean | null;
   hideOnGameLaunch: boolean | null;
+  twitchClientId: string | null;
+  twitchClientSecret: string | null;
+  showTools?: boolean | null;
+  automaticBackups?: boolean | null;
+  libraryLayout?: string | null;
+  savedViews?: string | null;
+}
+
+export interface GameCopy {
+  id: string;
+  store: Store;
+  missing: boolean;
+  installPath: string | null;
+  playtimeMinutes: number;
+}
+
+export interface LaunchStatus {
+  gameId: string;
+  sourceId: string;
+  state: "launching" | "running" | "finished" | "failed";
+  message?: string | null;
+}
+
+export function gameBusy(game: Game): boolean {
+  return game.launchStatus?.state === "launching" || game.launchStatus?.state === "running";
+}
+
+export function launchLabel(game: Game): string {
+  if (game.launchStatus?.state === "launching") return "Launching…";
+  if (game.launchStatus?.state === "running") return "Running";
+  if (game.missing) return "Unavailable";
+  if (game.launchStatus?.state === "failed") return "Retry launch";
+  return "Play";
+}
+
+export function gameActionLabel(game: Game): string {
+  if (game.launchStatus?.state === "launching") return "Launching…";
+  if (game.launchStatus?.state === "running") return "Running";
+  if (game.missing) return "Locate game";
+  if (game.launchStatus?.state === "failed") return "Retry launch";
+  return "Play";
 }
 
 export interface LibraryStats {
@@ -260,9 +305,9 @@ export const STORE_LABELS: Record<Store, string> = {
 
 export const QUICK_FILTERS: { id: LibraryFilter; label: string }[] = [
   { id: "all", label: "All" },
-  { id: "favorites", label: "Favorites" },
-  { id: "never", label: "Never" },
-  { id: "missing", label: "Missing" },
+  { id: "favorites", label: "Pinned" },
+  { id: "never", label: "Unplayed" },
+  { id: "hidden", label: "Hidden" },
 ];
 
 export const STORE_FILTER_OPTIONS: { id: LibraryFilter; label: string }[] = [
@@ -280,18 +325,16 @@ export const STORE_FILTER_OPTIONS: { id: LibraryFilter; label: string }[] = [
   { id: "itch", label: "itch.io" },
   { id: "humble", label: "Humble" },
   { id: "other", label: "Other" },
-  { id: "hidden", label: "Hidden" },
 ];
 
 export const SORT_OPTIONS: { id: SortMode; label: string }[] = [
   { id: "custom", label: "Custom" },
-  { id: "name", label: "A–Z" },
-  { id: "nameDesc", label: "Z–A" },
+  { id: "name", label: "Title (A–Z)" },
+  { id: "nameDesc", label: "Title (Z–A)" },
   { id: "recent", label: "Recently played" },
   { id: "added", label: "Recently added" },
   { id: "playtime", label: "Playtime" },
-  { id: "favorites", label: "Favorites first" },
-  { id: "missing", label: "Missing first" },
+  { id: "favorites", label: "Pinned first" },
 ];
 
 export const FILTER_OPTIONS = [...QUICK_FILTERS, ...STORE_FILTER_OPTIONS];
@@ -387,6 +430,7 @@ export function cardMinPx(scale: number): number {
 }
 
 export interface AppearancePrefs {
+  translucency?: number;
   theme: ThemeId;
   cardScale: number;
   showTitles?: boolean;
@@ -422,6 +466,8 @@ export function applyAppearance(prefs: AppearancePrefs | ThemeId, cardScaleArg?:
 
   const theme = prefsObj.theme;
   const cardScale = prefsObj.cardScale;
+  const translucency = Math.max(0, Math.min(70, prefsObj.translucency ?? 15));
+  document.documentElement.style.setProperty("--window-opacity", String(1 - translucency / 100));
   const showTitles = prefsObj.showTitles !== false;
   const showStoreLabels = prefsObj.showStoreLabels !== false;
   const density = prefsObj.gridDensity ?? "normal";
@@ -442,6 +488,7 @@ export function applyAppearance(prefs: AppearancePrefs | ThemeId, cardScaleArg?:
 
 export function appearanceFromSettings(s: AppSettings): AppearancePrefs {
   return {
+    translucency: s.translucency ?? 15,
     theme: isThemeId(s.theme) ? s.theme : "emerald",
     cardScale: typeof s.cardScale === "number" && s.cardScale > 0 ? s.cardScale : 1,
     showTitles: s.showTitles !== false,
@@ -470,6 +517,7 @@ export function coverSourceLabel(game: Game): string | null {
   if (url.includes("steamstatic") || url.includes("steamcdn") || url.includes("steamcommunity")) {
     return "Steam";
   }
+  if (url.includes("igdb.com")) return "IGDB";
   if (url.includes("steamgriddb")) return "SteamGridDB";
   if (url.includes("wikipedia") || url.includes("wikimedia")) return "Wikipedia";
   if (url.includes("epicgames")) return "Epic";
@@ -538,11 +586,12 @@ export function coverCandidates(
 ): string[] {
   const out: string[] = [];
   const add = (url?: string | null) => {
-    if (!url || url.startsWith("data:")) return;
+    if (!url || (url.startsWith("data:") && !url.startsWith("data:image/"))) return;
     if (!out.includes(url)) out.push(url);
   };
   add(override ?? null);
   if (game.coverPath) localCoverUrls(game.coverPath).forEach(add);
+  if (game.coverUrl?.startsWith("data:image/") || game.coverUrl?.startsWith("blob:")) add(game.coverUrl);
   if (opts?.allowRemote !== false) {
     const steamId = steamIdOf(game);
     if (steamId) steamCoverUrls(steamId).forEach(add);

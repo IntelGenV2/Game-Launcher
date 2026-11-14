@@ -2,6 +2,7 @@ use crate::backup;
 use crate::covers;
 use crate::db::{self, Database};
 use crate::game_watch;
+use crate::igdb::IgdbAuth;
 use crate::launch;
 use crate::metadata;
 use crate::models::{
@@ -12,14 +13,15 @@ use crate::playnite;
 use crate::scanners;
 use crate::system_info;
 use serde::Serialize;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 pub struct AppState {
     pub db: Mutex<Database>,
-    /// Bumped each time a hide-while-playing watch starts so older watchers stop.
-    pub hide_watch_gen: AtomicU64,
+    pub sessions: Mutex<std::collections::HashMap<String, crate::models::LaunchStatus>>,
+    pub maintenance: AtomicBool,
+    pub operation: Mutex<()>,
 }
 
 fn user_err(e: impl std::fmt::Display) -> String {
@@ -111,20 +113,23 @@ pub fn rescan_library(app: AppHandle, state: State<AppState>) -> Result<Vec<Game
 }
 
 #[tauri::command]
-pub fn launch_game(app: AppHandle, state: State<AppState>, id: String) -> Result<Game, String> {
-    let game = with_db(&state, |db| {
-        db.record_launch(&id)?;
-        db.get_game(&id)?
-            .ok_or_else(|| anyhow::anyhow!("game not found"))
-    })?;
-    launch::launch_game(&game).map_err(user_err)?;
-    game_watch::maybe_hide_while_playing(&app, &state, &game);
-    Ok(game)
+pub fn launch_game(app: AppHandle, state: State<AppState>, id: String, source_id: Option<String>) -> Result<Game, String> {
+    game_watch::start(&app, &state, &id, source_id.as_deref())
 }
 
 #[tauri::command]
-pub fn end_play_session(state: State<AppState>, id: String, minutes: i64) -> Result<Game, String> {
-    with_db(&state, |db| db.end_session_and_add_playtime(&id, minutes))
+pub fn launch_statuses(state: State<AppState>) -> Result<Vec<crate::models::LaunchStatus>, String> {
+    Ok(state.sessions.lock().map_err(|e|e.to_string())?.values().cloned().collect())
+}
+
+#[tauri::command]
+pub fn set_pinned(state: State<AppState>, id: String, pinned: bool) -> Result<Game, String> {
+    with_db(&state, |db|db.set_pinned(&id,pinned))
+}
+
+#[tauri::command]
+pub fn set_preferred_copy(state: State<AppState>, id: String, source_id: String) -> Result<Game, String> {
+    with_db(&state, |db|db.set_preferred_copy(&id,&source_id))
 }
 
 #[tauri::command]
@@ -213,7 +218,7 @@ pub fn fetch_covers(
     ids: Option<Vec<String>>,
 ) -> Result<(), String> {
     covers::warm_cover_catalog();
-    let (games, api_key, attached) = with_db(&state, |db| {
+    let (games, api_key, igdb_auth, attached) = with_db(&state, |db| {
         let settings = db.get_settings()?;
         let mut games = db.list_games(true)?;
         let attached = covers::reattach_local_covers(&mut games, |id, path| {
@@ -223,7 +228,12 @@ pub fn fetch_covers(
                 let _ = db.clear_cover_path(id);
             }
         });
-        Ok((games, settings.steam_grid_db_api_key, attached))
+        Ok((
+            games,
+            settings.steam_grid_db_api_key.clone(),
+            IgdbAuth::from_settings(&settings),
+            attached,
+        ))
     })?;
 
     for (id, path) in attached {
@@ -282,7 +292,7 @@ pub fn fetch_covers(
         }
         let _guard = FetchGuard;
         for game in targets {
-            let fetched = match covers::ensure_cover(&game, api_key.as_deref()) {
+            let fetched = match covers::ensure_cover(&game, api_key.as_deref(), igdb_auth.as_ref()) {
                 Ok(Some(f)) => f,
                 _ => continue,
             };
@@ -404,7 +414,7 @@ pub fn choose_cover(state: State<AppState>, id: String, path: String) -> Result<
         if !std::path::Path::new(&path).is_file() {
             anyhow::bail!("Cover file not found");
         }
-        db.set_cover(&id, None, Some(&path), Some("Local"))?;
+        db.set_cover(&id, None, Some(&path), Some("Custom"))?;
         db.get_game(&id)?
             .ok_or_else(|| anyhow::anyhow!("game not found"))
     })
@@ -412,6 +422,8 @@ pub fn choose_cover(state: State<AppState>, id: String, path: String) -> Result<
 
 #[tauri::command]
 pub fn remove_game(state: State<AppState>, id: String) -> Result<Game, String> {
+    let _operation=state.operation.lock().map_err(user_err)?;
+    if game_watch::active(&state) { return Err("Finish running games before removing library entries".into()); }
     let game = with_db(&state, |db| {
         let game = db
             .get_game(&id)?
@@ -549,14 +561,14 @@ pub fn set_launch_options(
 
 #[tauri::command]
 pub fn fetch_game_metadata(state: State<AppState>, id: String) -> Result<Game, String> {
-    let (game, key) = with_db(&state, |db| {
+    let (game, igdb_auth) = with_db(&state, |db| {
         let g = db
             .get_game(&id)?
             .ok_or_else(|| anyhow::anyhow!("game not found"))?;
-        let key = db.get_settings()?.steam_grid_db_api_key;
-        Ok((g, key))
+        let igdb_auth = IgdbAuth::from_settings(&db.get_settings()?);
+        Ok((g, igdb_auth))
     })?;
-    let meta = metadata::fetch_for_game(&game, key.as_deref()).map_err(user_err)?;
+    let meta = metadata::fetch_for_game(&game, igdb_auth.as_ref()).map_err(user_err)?;
     with_db(&state, |db| db.apply_metadata(&id, &meta))
 }
 
@@ -593,14 +605,7 @@ pub fn launch_action(
             .ok_or_else(|| anyhow::anyhow!("game not found"))
     })?;
     match action.as_str() {
-        "play" => {
-            with_db(&state, |db| {
-                db.record_launch(&id)?;
-                Ok(())
-            })?;
-            launch::launch_game(&game).map_err(user_err)?;
-            game_watch::maybe_hide_while_playing(&app, &state, &game);
-        }
+        "play" => { return game_watch::start(&app, &state, &id, None); }
         "save_folder" => {
             let path = game
                 .save_folder
@@ -632,12 +637,31 @@ pub fn merge_games(
     keep_id: String,
     source_ids: Vec<String>,
 ) -> Result<Game, String> {
+    let _operation=state.operation.lock().map_err(user_err)?;
+    if game_watch::active(&state) { return Err("Finish running games before linking copies".into()); }
     with_db(&state, |db| db.merge_games(&keep_id, &source_ids))
 }
 
 #[tauri::command]
-pub fn export_backup(dest: String) -> Result<String, String> {
-    backup::export_library_zip(&dest).map_err(user_err)
+pub fn export_backup(state: State<AppState>, dest: String) -> Result<String, String> {
+    with_db(&state, |db|backup::export_library_zip(db,&dest))
+}
+
+#[tauri::command]
+pub fn preview_backup(path: String) -> Result<backup::BackupPreview,String> {
+    backup::preview(&path).map_err(user_err)
+}
+
+#[tauri::command]
+pub fn restore_backup(state:State<AppState>,path:String) -> Result<String,String> {
+    backup::stage_restore(&state,&path).map_err(user_err)
+}
+
+#[tauri::command]
+pub fn open_backups() -> Result<(),String> {
+    let path=db::app_data_dir().join("backups");
+    std::fs::create_dir_all(&path).map_err(user_err)?;
+    launch::open_folder(&path.to_string_lossy()).map_err(user_err)
 }
 
 #[tauri::command]
@@ -712,22 +736,22 @@ pub fn started_in_background() -> bool {
 }
 
 #[tauri::command]
-pub fn system_info() -> system_info::SystemInfo {
-    system_info::collect()
+pub async fn system_info() -> Result<system_info::SystemInfo, String> {
+    tauri::async_runtime::spawn_blocking(system_info::collect).await.map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-pub fn reset_all_art(state: State<AppState>) -> Result<(), String> {
-    with_db(&state, |db| db.clear_all_covers())?;
-    let dir = db::covers_dir();
-    if dir.exists() {
-        if let Ok(entries) = std::fs::read_dir(&dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_file() {
-                    let _ = std::fs::remove_file(path);
-                }
-            }
+pub fn reset_art(state: State<AppState>, custom: bool) -> Result<(), String> {
+    if COVER_FETCH_RUNNING.load(Ordering::SeqCst) { return Err("Wait for artwork downloads to finish, then retry.".into()); }
+    if custom {
+        let dest = db::app_data_dir().join("backups").join(format!("before-art-delete-{}.zip", chrono::Utc::now().format("%Y%m%d-%H%M%S")));
+        with_db(&state, |database| backup::export_library_zip(database, &dest.to_string_lossy()))?;
+    }
+    let paths = with_db(&state, |db| db.clear_art(custom))?;
+    let Ok(root)=db::covers_dir().canonicalize() else { return Ok(()); };
+    for raw in paths {
+        if let Ok(path)=std::path::Path::new(&raw).canonicalize() {
+            if path.starts_with(&root) && path.is_file() { std::fs::remove_file(path).map_err(user_err)?; }
         }
     }
     covers::invalidate_cover_catalog();
@@ -736,6 +760,8 @@ pub fn reset_all_art(state: State<AppState>) -> Result<(), String> {
 
 #[tauri::command]
 pub fn reset_all_stats(state: State<AppState>) -> Result<(), String> {
+    let _operation=state.operation.lock().map_err(user_err)?;
+    if game_watch::active(&state) { return Err("Finish running games before resetting history".into()); }
     with_db(&state, |db| db.clear_all_stats())
 }
 

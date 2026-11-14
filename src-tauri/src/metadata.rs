@@ -1,4 +1,5 @@
 use crate::covers;
+use crate::igdb::{self, IgdbAuth};
 use crate::models::Game;
 use anyhow::Result;
 use regex::Regex;
@@ -16,13 +17,36 @@ pub struct GameMetadata {
     pub steam_app_id: Option<String>,
 }
 
-pub fn fetch_for_game(game: &Game, _sgdb_key: Option<&str>) -> Result<GameMetadata> {
+pub fn fetch_for_game(game: &Game, igdb_auth: Option<&IgdbAuth>) -> Result<GameMetadata> {
     let mut meta = GameMetadata::default();
     let steam_id = covers::steam_app_id_for(game);
     if let Some(id) = steam_id.clone() {
         meta.steam_app_id = Some(id.clone());
         if let Ok(Some(from_steam)) = steam_appdetails(&id) {
             merge(&mut meta, from_steam);
+        }
+    }
+
+    if let Some(auth) = igdb_auth {
+        if meta.description.is_none()
+            || meta.developer.is_none()
+            || meta.release_year.is_none()
+            || meta.genres.is_empty()
+            || meta.steam_app_id.is_none()
+        {
+            if let Ok(Some(hit)) = igdb::lookup(auth, &game.name, steam_id.as_deref()) {
+                merge(
+                    &mut meta,
+                    GameMetadata {
+                        developer: hit.developer,
+                        publisher: hit.publisher,
+                        release_year: hit.first_release_date.and_then(igdb::release_year),
+                        description: hit.summary,
+                        genres: hit.genres,
+                        steam_app_id: hit.steam_app_id,
+                    },
+                );
+            }
         }
     }
 
@@ -66,7 +90,7 @@ fn merge(into: &mut GameMetadata, from: GameMetadata) {
 fn client() -> Result<reqwest::blocking::Client> {
     Ok(reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(20))
-        .user_agent("IntelGenGameLauncher/0.2 (metadata)")
+        .user_agent("Studio256GameLauncher/0.2 (metadata)")
         .build()?)
 }
 

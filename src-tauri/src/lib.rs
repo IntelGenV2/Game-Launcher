@@ -4,6 +4,7 @@ mod console;
 mod covers;
 mod db;
 mod game_watch;
+mod igdb;
 mod launch;
 mod metadata;
 mod models;
@@ -64,17 +65,10 @@ fn show_main_window(app: &tauri::AppHandle) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    db::apply_pending_reset();
-    let db_path = db::default_db_path();
-    let database = Database::open(&db_path).expect("failed to open database");
-    let start_hidden = std::env::args().any(|a| a == "--background")
-        && database
-            .get_settings()
-            .ok()
-            .and_then(|s| s.start_in_background)
-            .unwrap_or(true);
-
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            show_main_window(app);
+        }))
         .plugin(tauri_plugin_window_state::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -83,16 +77,14 @@ pub fn run() {
         .register_uri_scheme_protocol("cover", |_ctx, request| {
             cover_protocol_response(&request)
         })
-        .manage(AppState {
-            db: Mutex::new(database),
-            hide_watch_gen: std::sync::atomic::AtomicU64::new(0),
-        })
         .invoke_handler(tauri::generate_handler![
             commands::list_games,
             commands::list_hidden_games,
             commands::rescan_library,
             commands::launch_game,
-            commands::end_play_session,
+            commands::launch_statuses,
+            commands::set_pinned,
+            commands::set_preferred_copy,
             commands::toggle_favorite,
             commands::set_hidden,
             commands::open_install_folder,
@@ -133,11 +125,14 @@ pub fn run() {
             commands::suggest_duplicates,
             commands::merge_games,
             commands::export_backup,
+            commands::preview_backup,
+            commands::restore_backup,
+            commands::open_backups,
             commands::import_playnite,
             commands::default_playnite_path,
             commands::started_in_background,
             commands::system_info,
-            commands::reset_all_art,
+            commands::reset_art,
             commands::reset_all_stats,
             commands::reset_app,
             console::explorer_places,
@@ -147,8 +142,24 @@ pub fn run() {
             console::system_power,
         ])
         .setup(move |app| {
+            // Single-instance registration runs before setup. A second launch must
+            // not recover live sessions or apply a pending restore/reset.
+            db::apply_pending_reset();
+            if let Err(error)=backup::apply_pending_restore() { eprintln!("Restore was not applied: {error}"); }
+            let database = Database::open(&db::default_db_path())?;
+            database.recover_sessions()?;
+            let start_hidden = std::env::args().any(|a| a == "--background")
+                && database.get_settings()?.start_in_background.unwrap_or(true);
+            app.manage(AppState {
+                db: Mutex::new(database),
+                sessions: Mutex::new(std::collections::HashMap::new()),
+                maintenance: std::sync::atomic::AtomicBool::new(false),
+                operation: Mutex::new(()),
+            });
             let handle = app.handle().clone();
+            backup::start_automatic_backups(handle.clone());
             if let Some(win) = app.get_webview_window("main") {
+                let _ = win.set_decorations(false);
                 if !start_hidden {
                     let _ = win.show();
                     let _ = win.set_focus();
@@ -183,10 +194,10 @@ pub fn run() {
             let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show_i, &quit_i])?;
             let tray_handle = handle.clone();
-            TrayIconBuilder::new()
+            TrayIconBuilder::with_id("main")
                 .icon(app.default_window_icon().cloned().expect("app icon"))
                 .menu(&menu)
-                .tooltip("IntelGen Game Launcher")
+                .tooltip(&app.package_info().name)
                 .on_menu_event(move |app, event| match event.id.as_ref() {
                     "show" => show_main_window(app),
                     "quit" => app.exit(0),

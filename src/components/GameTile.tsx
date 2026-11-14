@@ -1,6 +1,7 @@
 import { Game, GameGroup, STORE_LABELS, Store, formatLastPlayed, formatPlaytime } from "../types";
 import { useEffect, useRef, useState } from "react";
 import { CoverImg } from "./CoverImg";
+import { gameBusy, launchLabel } from "../types";
 import {
   TileContextMenu,
   type MenuAnchor,
@@ -9,6 +10,8 @@ import {
 } from "./TileContextMenu";
 
 interface Props {
+  layout?: "grid" | "list";
+  onTogglePin: (game: Game) => void;
   game: Game;
   coverDataUrl?: string | null;
   index: number;
@@ -21,7 +24,6 @@ interface Props {
   onPointerDragStart?: (e: React.PointerEvent, game: Game) => void;
   onOpen: (game: Game) => void;
   onLaunch: (game: Game) => void;
-  onToggleFavorite: (game: Game) => void;
   onHide: (game: Game) => void;
   onOpenFolder: (game: Game) => void;
   onOpenSaveFolder?: (game: Game) => void;
@@ -35,6 +37,8 @@ interface Props {
 }
 
 export function GameTile({
+  layout = "grid",
+  onTogglePin,
   game,
   coverDataUrl,
   index,
@@ -47,7 +51,6 @@ export function GameTile({
   onPointerDragStart,
   onOpen,
   onLaunch,
-  onToggleFavorite,
   onHide,
   onOpenFolder,
   onOpenSaveFolder,
@@ -105,7 +108,7 @@ export function GameTile({
 
   return (
     <div
-      className={`tile${inGroup ? " tile-in-group" : ""}${dropActive ? " drop-target" : ""}${
+      className={`tile${layout === "list" ? " tile-list" : ""}${inGroup ? " tile-in-group" : ""}${dropActive ? " drop-target" : ""}${
         dragActive ? " tile-dragging" : ""
       }${expandIndex != null ? " tile-expand-out" : ""}${focusActive ? " tile-focused" : ""}${
         selected ? " tile-selected" : ""
@@ -113,7 +116,7 @@ export function GameTile({
       style={style}
       role="button"
       tabIndex={0}
-      data-focus-key={`game:${game.id}`}
+      data-focus-key={`${inGroup ? "member" : "game"}:${game.id}`}
       data-drop-game={inGroup ? undefined : game.id}
       aria-selected={selectMode ? selected : undefined}
       onPointerDown={(e) => {
@@ -131,6 +134,7 @@ export function GameTile({
         onOpen(game);
       }}
       onKeyDown={(e) => {
+        if (e.target !== e.currentTarget) return;
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
           if (selectMode) onToggleSelect?.(game);
@@ -154,14 +158,14 @@ export function GameTile({
             <>
               <button
                 type="button"
-                className={`star-btn${game.favorite ? " active" : ""}`}
-                title={game.favorite ? "Unfavorite" : "Favorite"}
+                className={`star-btn${game.pinned ? " active" : ""}`}
+                title={game.pinned ? "Unpin game" : "Pin game"}
                 onClick={(e) => {
                   e.stopPropagation();
-                  onToggleFavorite(game);
+                  onTogglePin(game);
                 }}
               >
-                ★
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 2h8v2l-2 2v4l4 4v2h-5v5l-1 2-1-2v-5H6v-2l4-4V6L8 4z" /></svg>
               </button>
               <button
                 type="button"
@@ -182,7 +186,8 @@ export function GameTile({
 
         <CoverImg game={game} override={coverDataUrl} draggable={false} allowRemote={false} />
 
-        {game.missing && <span className="missing-badge">Missing</span>}
+        {(game.missing || gameBusy(game) || game.launchStatus?.state === "failed") && <span className="missing-badge" role="status">{gameBusy(game) ? launchLabel(game) : game.missing ? "Unavailable" : "Launch failed"}</span>}
+        {game.pinned && <span className="pin-badge">Pinned</span>}
         {inGroup && <span className="group-badge">{inGroup.name}</span>}
 
         {!selectMode && (
@@ -190,7 +195,7 @@ export function GameTile({
             <button
               type="button"
               className="play-btn"
-              disabled={game.missing}
+              disabled={game.missing || gameBusy(game)}
               aria-label={`Play ${game.name}`}
               onClick={(e) => {
                 e.stopPropagation();
@@ -213,19 +218,11 @@ export function GameTile({
               onLaunch(game);
               closeMenu();
             }}
-            disabled={game.missing}
+            disabled={game.missing || gameBusy(game)}
           >
-            Play
+            {launchLabel(game)}
           </button>
-          <button
-            type="button"
-            onClick={() => {
-              onToggleFavorite(game);
-              closeMenu();
-            }}
-          >
-            {game.favorite ? "Remove favorite" : "Add favorite"}
-          </button>
+          <button type="button" onClick={() => { onTogglePin(game); closeMenu(); }}>{game.pinned ? "Unpin game" : "Pin above games"}</button>
           {onOpenSaveFolder && game.saveFolder && (
             <button
               type="button"
@@ -294,6 +291,13 @@ export function GameTile({
 
       <div className="tile-title">{game.name}</div>
       <div className="tile-store">{STORE_LABELS[game.store as Store] ?? game.store}</div>
+      {layout === "list" && <div className="tile-list-controls">
+        <span className="list-time">{formatPlaytime(game.playtimeMinutes)}<small>{formatLastPlayed(game.lastPlayedAt)}</small></span>
+        {!selectMode && <>
+          <button type="button" className="btn" disabled={game.missing || gameBusy(game)} onClick={e => { e.stopPropagation(); onLaunch(game); }}>{launchLabel(game)}</button>
+          <button type="button" className="btn" aria-label={`More actions for ${game.name}`} onClick={e => { e.stopPropagation(); openMenu(anchorFromElement(e.currentTarget)); }}>⋯</button>
+        </>}
+      </div>}
     </div>
   );
 }

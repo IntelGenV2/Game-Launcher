@@ -25,6 +25,7 @@ export function MergeModal({ open, games, groups, coverMap, onClose, onMerge }: 
   const [keepId, setKeepId] = useState<string | null>(null);
   const [picked, setPicked] = useState<Set<string>>(() => new Set());
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [storeByKey, setStoreByKey] = useState<Record<string, Store>>({});
 
   const autoGroups = useMemo(() => (manual ? [] : groups.filter((g) => g.games.length >= 2)), [manual, groups]);
@@ -60,6 +61,7 @@ export function MergeModal({ open, games, groups, coverMap, onClose, onMerge }: 
 
   async function mergeAuto() {
     setBusy(true);
+    setError(null);
     try {
       for (const group of autoGroups) {
         const keepGame = preferredGame(group.games, storeByKey[group.key]);
@@ -68,6 +70,8 @@ export function MergeModal({ open, games, groups, coverMap, onClose, onMerge }: 
         await onMerge(keepGame.id, sourceIds);
       }
       onClose();
+    } catch (error) {
+      setError(String(error));
     } finally {
       setBusy(false);
     }
@@ -80,12 +84,13 @@ export function MergeModal({ open, games, groups, coverMap, onClose, onMerge }: 
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
-        aria-label="Merge duplicates"
+        aria-label="Link store copies"
       >
+        {error && <p className="hint update-error" role="alert">{error}</p>}
         {manual ? (
           <>
-            <h2>Merge duplicates</h2>
-            <p>Pick which copy to keep. Playtime, tags, notes, and art from the others fold into it.</p>
+            <h2>Link store copies</h2>
+            <p>Choose the main card. All installations stay available through Play via. Pins, tags and notes are combined.</p>
             <div className="merge-list">
               {games.map((g) => {
                 const src = coverSrc(g, coverMap[g.id]);
@@ -102,7 +107,7 @@ export function MergeModal({ open, games, groups, coverMap, onClose, onMerge }: 
                         {g.missing ? " · missing" : ""}
                       </span>
                     </span>
-                    <label className="keep-radio">
+                    <span className="keep-radio">
                       <input
                         type="radio"
                         name="keep"
@@ -110,8 +115,8 @@ export function MergeModal({ open, games, groups, coverMap, onClose, onMerge }: 
                         disabled={!picked.has(g.id)}
                         onChange={() => setKeepId(g.id)}
                       />
-                      Keep
-                    </label>
+                      Main card
+                    </span>
                   </label>
                 );
               })}
@@ -127,25 +132,28 @@ export function MergeModal({ open, games, groups, coverMap, onClose, onMerge }: 
                 onClick={async () => {
                   if (!keep) return;
                   setBusy(true);
+                  setError(null);
                   try {
                     await onMerge(
                       keep.id,
                       sources.map((s) => s.id),
                     );
                     onClose();
+                  } catch (error) {
+                    setError(String(error));
                   } finally {
                     setBusy(false);
                   }
                 }}
               >
-                {busy ? "Merging…" : `Merge ${sources.length + (keep ? 1 : 0)} games`}
+                {busy ? "Linking…" : `Link ${sources.length + (keep ? 1 : 0)} copies`}
               </button>
             </div>
           </>
         ) : (
           <>
             <h2>Same game, more than one store</h2>
-            <p>Copies will merge automatically. Pick which store should launch each title.</p>
+            <p>Review these matches and choose the main card. Link copies to keep every store installation under one game.</p>
             <div className="auto-merge-list">
               {autoGroups.map((group) => {
                 const stores = [...new Map(group.games.map((g) => [g.store, g])).values()];
@@ -189,7 +197,7 @@ export function MergeModal({ open, games, groups, coverMap, onClose, onMerge }: 
                 disabled={busy || autoGroups.length === 0}
                 onClick={() => void mergeAuto()}
               >
-                {busy ? "Merging…" : `Merge ${autoGroups.length} title${autoGroups.length === 1 ? "" : "s"}`}
+                {busy ? "Linking…" : `Link ${autoGroups.length} title${autoGroups.length === 1 ? "" : "s"}`}
               </button>
             </div>
           </>

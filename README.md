@@ -1,117 +1,61 @@
-# IntelGen Game Launcher
+# Studio 256 Game Launcher
 
-Windows desktop app that pulls your installed games from a bunch of store clients into one cover-art library. Built with Tauri 2 + React. Open source.
+Studio 256 brings your installed PC games into one library. Launch a game from its cover, organize games into groups, or switch to Big Picture to browse with a controller.
 
-Repo: [IntelGenV2/Game-Launcher](https://github.com/IntelGenV2/Game-Launcher)
+## Download for Windows
+
+Visit the [latest Windows release](https://github.com/IntelGenV2/Game-Launcher/releases/latest) and run the x64 setup file. For the portable version, extract the x64 portable ZIP and open the launcher inside. To check for a newer version from the launcher, open **Settings → Updates**.
 
 ## What it does
 
 - Scans the stores you already have installed and lists those games in one place
 - Launch from cover art (usually through the store client — same idea as Playnite)
 - Groups with a fanned cover stack; each grouped cover keeps that group’s color border
-- Bulk select, keyboard + controller navigation
+- Bulk select and desktop keyboard navigation; controller support in Big Picture only
 - **Big Picture** — fullscreen, controller-first couch mode
-- Favorites, hide, custom sort order
-- Playtime for sessions started here; Steam local playtime is imported when available
+- Pinned games, hide, custom sort order (old favorites are merged into pins)
+- Pinned games above the games list, separate from groups
+- Grid/list views for games and groups, combined search/store/status filters, and random-pick previews
+- Linked store copies with a preferred installation; original launch targets are retained
+- Process-based launch status and playtime; Steam local playtime is imported when available
+- Library backup/restore, plus seven rotating daily local backups while the launcher is open
+- Custom draggable title bar with minimize, maximize/restore, and close controls
 - Cover art from Steam / Epic / Xbox catalog / Wikipedia / optional SteamGridDB key
 - Themes and grid customization in Settings
 - Auto-update from GitHub Releases
 
 ## Big Picture
 
-Sidebar → **Big Picture** (goes fullscreen). Built for a gamepad first; keyboard still works.
+Sidebar → **Big Picture**. The couch UI covers the library, then the window goes fullscreen. Built for a gamepad first; keyboard still works.
 
-**Sections** (left rail, or **LB / RB** / **Q / E**): Library, Files, Stats, System.
+**Sections** (left rail): Library, Stats, Power. Enable optional **System** in Settings → System for component sections covering the processor, RAM modules, graphics drivers, displays, storage and Windows, plus file browsing. **B** focuses the rail — it pops out and enlarges. Up/down highlight, **A** opens that section. **LB / RB** (or **Q / E**) also jump between sections.
 
-**Library** is a wrapping 3D cover wheel. Groups show as a fanned stack of covers. **A** / Enter opens a group (covers slide out of the fan onto the wheel). **B** / Esc slides them back in; the rest of the library slides back into place. Ungrouped games sit on the same wheel.
+**Library** is a wrapping 3D cover wheel. Left/right pick a game. Up opens a folder or game info. Down closes the folder. **A** plays or opens a folder. Groups show as a fanned stack of covers.
 
-**System** can sleep, lock, restart, or shut down the PC after a confirm. Cancel is the default.
+**Game info** opens with **Back** selected, above the cover. Left/right move within a row. Up/down move between rows: Back → Overview/Sessions → Play / Pin / folders.
+
+**Files:** left/right moves the place chips or the file list, up/down switches between those rows, **A** / Enter opens. **B** / Esc opens the side menu. **LB / RB** still switch sections. Extra keyboard shortcuts stay off on that screen.
+
+**System** shows hardware details in component sections. **Power** provides sleep, lock, restart and shut down with confirmation. Leave Big Picture from Power → Desktop.
 
 | Control | Gamepad | Keyboard |
 | --- | --- | --- |
 | Move | D-pad / left stick | Arrows |
-| Play / open / select | A | Enter |
-| Back / close group | B | Esc |
-| Game info | X | — |
-| Browse (filter / sort) | Y | Y |
+| Select / play / open | A | Enter |
+| Side menu | B | Esc |
+| Game info / open folder | Up | Up |
+| Close folder | Down | Down |
+| Browse (filter / sort / keyboard) | Y | Y |
 | Cycle sections | LB / RB | Q / E |
 | System | Start | — |
-| Rail | Up from the list, then left / right | Up, then left / right |
 
-Desktop library still uses D-pad to move, A to open, B back, X favorite, View for select mode.
+Controller input is active only in Big Picture. The desktop library supports mouse and keyboard navigation.
 
-## How scanning works
+## Find your games
 
-Rescan walks local install metadata only. No store logins. If a game isn’t installed (or the client never wrote a path), it won’t show up.
+Choose **Rescan** after installing a game. The launcher checks for installations from Steam, Epic, GOG, Xbox, EA, Battle.net, Ubisoft, Riot, Rockstar, Amazon Games, itch.io, Humble, Wargaming, and Roblox. You can also add a game by dragging its executable onto the library.
 
-| Store | Where it looks |
-| --- | --- |
-| **Steam** | Steam library folders / `appmanifest_*.acf` |
-| **Epic** | `C:\ProgramData\Epic\EpicGamesLauncher\Data\Manifests\*.item` |
-| **GOG** | `HKLM\SOFTWARE\…\GOG.com\Games` |
-| **Battle.net** | Uninstall entries with `Battle.net --uid=…`, `Battle.net.config` **only if Path exists**, `product.db` path hints, Call of Duty HQ folders |
-| **Ubisoft** | `HKLM\…\Ubisoft\Launcher\Installs` |
-| **Xbox / Game Pass** | `XboxGames` / `Xbox Games` folders on each drive (best-effort) |
-| **EA App** | `C:\ProgramData\EA Desktop\InstallData` + matching install folders |
-| **Roblox** | Local Roblox Player install under LocalAppData |
-| **Wargaming** | Game Center prefs / uninstall / common WoT·WoWs·WoWp folders |
-| **Riot** | `%ProgramData%\Riot Games\Metadata\*.live\*.product_settings.yaml` (needs `product_install_full_path`) and HKCU uninstall keys |
-| **Rockstar** | Uninstall strings with `uninstall={titleId}` (known title map) and `HKLM\SOFTWARE\Rockstar Games\*\InstallFolder` |
-| **Amazon Games** | `%LOCALAPPDATA%\Amazon Games\Data\Games\Sql\GameInstallInfo.sqlite` (`Installed = 1`) |
-| **itch.io** | `%APPDATA%\itch\db\butler.db` caves + install locations |
-| **Humble App** | `%APPDATA%\Humble App\config.json` → `game-collection-4` (`downloaded` / `installed`) |
-| **Manual** | Add an `.exe` from the UI, or drop one onto the library |
-
-Owned-but-not-installed library lists (Amazon account, Humble website keys, itch owned keys, etc.) are **not** imported. That needs account APIs and we deliberately skip it.
-
-Games that disappear from disk get marked **Missing** so favorites / playtime stick around.
-
-## Prerequisites
-
-- Node.js 18+
-- Rust (rustup)
-- Windows: Visual Studio Build Tools with the “Desktop development with C++” workload
-
-## Run
-
-```powershell
-npm install
-.\scripts\dev.ps1
-```
-
-Or:
-
-```bash
-npm install
-npm run tauri dev
-```
-
-## Build
-
-```powershell
-npm install
-npm run tauri build
-```
-
-Installer is NSIS (`lzma`). For a signed build the in-app updater can use, see **Releasing**.
-
-## Releasing
-
-GitHub Actions **Release** (`.github/workflows/release.yml`) runs on `v*` tags and `workflow_dispatch`. It checks out **that git commit**, then `tauri-apps/tauri-action` builds it. Local uncommitted files are not in the installer.
-
-Push every file the tag needs **before** tagging (frontend + `src-tauri` + workflow). A tag on an old `main` will ship old code even if your working tree is newer.
-
-Repo secret required: `TAURI_SIGNING_PRIVATE_KEY` (full contents of `%USERPROFILE%\.tauri\intelgen-game-launcher.key`).
-
-Local alternative:
-
-```powershell
-.\scripts\release.ps1 -Version 0.3.5 -Notes "Short release notes"
-```
-
-That bumps `package.json`, `src-tauri/tauri.conf.json`, and `src-tauri/Cargo.toml`, signed-builds, and writes `release-assets\` (installer, `.sig`, `latest.json`, optional portable zip). Upload those to a GitHub Release tagged `v0.3.5`. The app checks:
-
-`https://github.com/IntelGenV2/Game-Launcher/releases/latest/download/latest.json`
+Games that disappear from disk show **Unavailable** and retain their pins and playtime. Open the game to locate it or retry detection.
 
 ## Cover art
 
@@ -120,11 +64,16 @@ Tried in order (portrait/square box art only — no wide headers):
 1. Steam library capsule (when an AppID is known or found by name)
 2. Epic product art (Epic titles)
 3. Microsoft Store catalog (Xbox titles)
-4. SteamGridDB (optional key in Settings → Covers)
-5. Wikipedia
-6. Roblox brand art (Roblox only)
+4. IGDB box art (optional Twitch Client ID + Secret in Settings → Covers)
+5. SteamGridDB (optional key in Settings → Covers)
+6. Wikipedia
+7. Roblox brand art (Roblox only)
+
+IGDB is the game catalog Twitch uses: look up the title (Steam ID first, then name) and take that record’s cover/metadata. Discord is different — it only matches a running `.exe` filename against its own detectable-games list, which is why some launches never show as “Playing …”.
 
 You can also set a custom cover on a game (Edit → Cover art); the image is copied into app storage.
+
+Settings → Covers separates **Refresh downloaded artwork** from **Delete custom artwork**. Refresh preserves manually chosen and install-folder artwork. Deleting custom artwork creates a recovery backup first. Provider credentials live under **Advanced artwork providers**.
 
 ## Data
 
@@ -132,8 +81,13 @@ You can also set a custom cover on a game (Edit → Cover art); the image is cop
 
 Library DB, cached covers, etc. live there.
 
+Settings → Library previews backup contents before a restore. Restoration replaces the library on restart and preserves a recovery zip in the backup folder. Backups exclude provider credentials and game saves. Imported histories for linked copies use the largest baseline; locally observed sessions are added once.
+
 ## Notes
 
 - Opening a game often flashes the store client. That’s normal.
-- Battle.net / Rockstar / Riot detection follows the same local signals other launchers use; short product codes are matched carefully so random folders don’t become “Overwatch 2”.
-- Don’t commit `node_modules` or `src-tauri/target`.
+- Only one launcher window runs at a time. Opening it again (or clicking the shortcut while it’s in the tray) focuses the existing instance.
+
+Appearance settings include a live translucency slider (0–70%). Cancel restores the previous appearance; Save persists it. The Studio 256 gradient wordmark and library controls share the custom window title bar.
+
+Drag anywhere on the title bar background, wordmark or empty control-container space to move the window; inputs and buttons remain interactive. Double-click the background to maximize or restore. The quick filters use an animated sliding selection, with separate Stores and Sort menus.

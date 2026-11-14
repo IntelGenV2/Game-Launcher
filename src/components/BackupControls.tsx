@@ -12,7 +12,7 @@ export function BackupControls() {
   async function choose() {
     setBusy(true); setMessage(null); setPreview(null);
     try {
-      const path = await open({ multiple: false, filters: [{ name: "IntelGen library backup", extensions: ["zip"] }] });
+      const path = await open({ multiple: false, filters: [{ name: "Studio 256 library backup", extensions: ["zip"] }] });
       if (typeof path === "string") setPreview({ ...await invoke<Preview>("preview_backup", { path }), path });
     } catch (error) { setMessage(String(error)); }
     finally { setBusy(false); }

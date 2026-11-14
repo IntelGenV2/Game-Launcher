@@ -1,4 +1,5 @@
 use crate::db::covers_dir;
+use crate::igdb::{self, IgdbAuth};
 use crate::models::{CoverChoiceGroup, Game, Store};
 use anyhow::Result;
 use std::fs;
@@ -22,7 +23,11 @@ pub struct CoverFetch {
 /// 1. Prefer vertical box / library art (~2:3 portrait); square box art is OK.
 /// 2. Never use headers, heroes, page backgrounds, screenshots, or wide capsules.
 /// 3. After download, reject landscape images (clearly wider than tall).
-pub fn ensure_cover(game: &Game, api_key: Option<&str>) -> Result<Option<CoverFetch>> {
+pub fn ensure_cover(
+    game: &Game,
+    api_key: Option<&str>,
+    igdb_auth: Option<&IgdbAuth>,
+) -> Result<Option<CoverFetch>> {
     let mut resolved_steam: Option<String> = None;
     let need_genre = game.genre.as_ref().map(|s| s.trim().is_empty()).unwrap_or(true);
 
@@ -143,7 +148,35 @@ pub fn ensure_cover(game: &Game, api_key: Option<&str>) -> Result<Option<CoverFe
         }
     }
 
-    // 5) SteamGridDB vertical grids
+    // 5) IGDB box art (canonical game record — Steam ID first, then name)
+    if let Some(auth) = igdb_auth {
+        let steam = resolve_steam_id(game, &mut resolved_steam);
+        if let Ok(Some(hit)) = igdb::lookup(auth, &game.name, steam.as_deref()) {
+            if let Some(steam_id) = hit.steam_app_id.as_ref() {
+                if resolved_steam.is_none() {
+                    resolved_steam = Some(steam_id.clone());
+                }
+            }
+            if let Some(url) = hit.cover_url() {
+                if try_save_cover(&url, &dest) {
+                    let genre = hit
+                        .genres
+                        .first()
+                        .cloned()
+                        .or_else(|| fetch_genre_if_needed(game, &mut resolved_steam, need_genre));
+                    return Ok(Some(done(
+                        game,
+                        &dest,
+                        resolved_steam.clone(),
+                        genre,
+                        "IGDB",
+                    )));
+                }
+            }
+        }
+    }
+
+    // 6) SteamGridDB vertical grids
     if let Some(key) = api_key {
         for n in &search_names {
             if let Ok(Some(url)) = steamgriddb_cover(n, key) {
@@ -161,7 +194,7 @@ pub fn ensure_cover(game: &Game, api_key: Option<&str>) -> Result<Option<CoverFe
         }
     }
 
-    // 6) Wikipedia cover (must pass shape check)
+    // 7) Wikipedia cover (must pass shape check)
     for n in &search_names {
         if let Ok(Some(url)) = wikipedia_cover(n) {
             if is_box_art_url(&url) && try_save_cover(&url, &dest) {
@@ -177,7 +210,7 @@ pub fn ensure_cover(game: &Game, api_key: Option<&str>) -> Result<Option<CoverFe
         }
     }
 
-    // 7) Roblox brand / game icon (square OK)
+    // 8) Roblox brand / game icon (square OK)
     if matches!(game.store, Store::Roblox) || compact_alnum(&game.name) == "roblox" {
         for url in roblox_cover_urls() {
             if try_save_cover(url, &dest) {
@@ -305,6 +338,8 @@ fn infer_source_from_url(url: &str) -> Option<&'static str> {
     let u = url.to_lowercase();
     if u.contains("steamstatic") || u.contains("steamcdn") || u.contains("steamcommunity") {
         Some("Steam")
+    } else if u.contains("igdb.com") {
+        Some("IGDB")
     } else if u.contains("steamgriddb") {
         Some("SteamGridDB")
     } else if u.contains("wikipedia") || u.contains("wikimedia") {
@@ -1286,7 +1321,7 @@ fn client() -> Result<&'static reqwest::blocking::Client> {
     }
     let built = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(25))
-        .user_agent("IntelGenGameLauncher/0.2 (cover-fetch)")
+        .user_agent("Studio256GameLauncher/0.2 (cover-fetch)")
         .build()?;
     let _ = CLIENT.set(built);
     Ok(CLIENT.get().expect("cover http client"))

@@ -11,6 +11,7 @@ interface Props<T extends string> {
   onChange: (value: T) => void;
   ariaLabel: string;
   className?: string;
+  triggerLabel?: string;
 }
 
 export function CustomSelect<T extends string>({
@@ -19,6 +20,7 @@ export function CustomSelect<T extends string>({
   onChange,
   ariaLabel,
   className = "",
+  triggerLabel,
 }: Props<T>) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -47,12 +49,13 @@ export function CustomSelect<T extends string>({
         type="button"
         className="custom-select-trigger"
         aria-label={ariaLabel}
+        title={triggerLabel ? `${triggerLabel}: ${selected?.label ?? ""}` : undefined}
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-controls={listId}
         onClick={() => setOpen((v) => !v)}
       >
-        <span>{selected?.label ?? ""}</span>
+        <span>{triggerLabel ?? selected?.label ?? ""}</span>
         <span className="custom-select-caret" aria-hidden>
           ▾
         </span>

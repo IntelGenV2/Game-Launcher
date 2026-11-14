@@ -20,7 +20,6 @@ import {
   LibraryOverview,
   QUICK_FILTERS,
   SORT_OPTIONS,
-  STORE_FILTER_OPTIONS,
   STORE_LABELS,
   SortMode,
   Store,
@@ -29,12 +28,14 @@ import {
   formatLastPlayed,
   formatPlaytime,
   gameOrderKey,
+  gameBusy,
+  launchLabel,
   groupAccent,
   neverPlayed,
 } from "../types";
 import { BarChart } from "./Charts";
 import { CoverImg } from "./CoverImg";
-import type { SystemInfo } from "./SystemPage";
+import { SystemDetails, SYSTEM_SECTIONS, type SystemSection, type SystemInfo } from "./SystemPage";
 
 type Screen = "library" | "explorer" | "stats" | "system";
 type Zone = "tabs" | "stage" | "list";
@@ -62,14 +63,21 @@ interface ExplorerListing {
   entries: ExplorerEntry[];
 }
 
-const TABS: { id: Screen; label: string; icon: string }[] = [
+const ALL_TABS: { id: Screen; label: string; icon: string }[] = [
   { id: "library", label: "Library", icon: "▣" },
-  { id: "explorer", label: "Files", icon: "▤" },
+  { id: "explorer", label: "System", icon: "▤" },
   { id: "stats", label: "Stats", icon: "▦" },
-  { id: "system", label: "System", icon: "⏻" },
+  { id: "system", label: "Power", icon: "⏻" },
 ];
-const BP_FILTERS = [...QUICK_FILTERS, ...STORE_FILTER_OPTIONS.filter((s) => s.id !== "hidden")];
-const BP_SORTS = SORT_OPTIONS.filter((s) => s.id !== "custom");
+const BP_FILTERS = QUICK_FILTERS.filter(filter => filter.id !== "hidden");
+const BP_SORTS = SORT_OPTIONS.filter((s) => s.id === "recent" || s.id === "name" || s.id === "playtime");
+const OSK_ROWS: string[][] = [
+  "1234567890".split(""),
+  "QWERTYUIOP".split(""),
+  "ASDFGHJKL".split(""),
+  "ZXCVBNM".split(""),
+  ["space", "bksp", "clear", "done"],
+];
 const BOOT_MS = 2400;
 const BOOT_MS_FAST = 360;
 const FLOW_WINDOW = 6;
@@ -82,12 +90,53 @@ function clockParts(d: Date) {
   };
 }
 
-function formatBytes(bytes: number): string {
-  if (!bytes || bytes < 0) return "—";
-  const gb = bytes / 1024 ** 3;
-  if (gb >= 10) return `${gb.toFixed(0)} GB`;
-  if (gb >= 1) return `${gb.toFixed(1)} GB`;
-  return `${(bytes / 1024 ** 2).toFixed(0)} MB`;
+
+function oskLabel(token: string): string {
+  if (token === "space") return "Space";
+  if (token === "bksp") return "⌫";
+  if (token === "clear") return "Clear";
+  if (token === "done") return "Done";
+  return token;
+}
+
+function browseGrid(): string[][] {
+  return [
+    ["browse:search"],
+    BP_FILTERS.map((f) => `filter:${f.id}`),
+    BP_SORTS.map((s) => `sort:${s.id}`),
+    ...OSK_ROWS.map((row, r) => row.map((_, c) => `key:${r}:${c}`)),
+  ];
+}
+
+function moveOnGrid(grid: string[][], current: string, dx: number, dy: number): string | null {
+  let r = 0;
+  let c = 0;
+  let found = false;
+  for (let i = 0; i < grid.length; i++) {
+    const j = grid[i].indexOf(current);
+    if (j >= 0) {
+      r = i;
+      c = j;
+      found = true;
+      break;
+    }
+  }
+  if (!found) return grid[0]?.[0] ?? null;
+  if (dy !== 0) {
+    const nextR = r + dy;
+    if (nextR < 0 || nextR >= grid.length) return null;
+    r = nextR;
+    c = Math.min(c, grid[r].length - 1);
+  } else if (dx !== 0) {
+    const nextC = c + dx;
+    if (nextC < 0 || nextC >= grid[r].length) return null;
+    c = nextC;
+  }
+  return grid[r][c];
+}
+
+function gameNavRows(actionKeys: string[]): string[][] {
+  return [["gact:back"], ["gtab:overview", "gtab:sessions"], actionKeys.length ? actionKeys : ["gact:play"]];
 }
 
 function wrapOffset(index: number, cursor: number, count: number): number {
@@ -142,17 +191,18 @@ function filterAndSort(
   const q = query.trim().toLowerCase();
   let list = games.filter((g) => {
     if (g.hidden) return false;
-    if (libraryFilter === "favorites" && !g.favorite) return false;
+    if (libraryFilter === "favorites" && !g.pinned) return false;
     if (libraryFilter === "never" && !neverPlayed(g)) return false;
     if (libraryFilter === "missing" && !g.missing) return false;
+    const stores = g.copies?.length ? g.copies.map(copy => copy.store) : [g.store];
     if (libraryFilter === "other") {
-      if (g.store !== "manual" && g.store !== "roblox") return false;
+      if (!stores.some(store => store === "manual" || store === "roblox")) return false;
     } else if (
       libraryFilter !== "all" &&
       libraryFilter !== "favorites" &&
       libraryFilter !== "never" &&
       libraryFilter !== "missing" &&
-      g.store !== libraryFilter
+      !stores.some(store => store === libraryFilter)
     ) {
       return false;
     }
@@ -161,7 +211,7 @@ function filterAndSort(
   });
   return [...list].sort((a, b) => {
     if (sortBy === "favorites") {
-      if (a.favorite !== b.favorite) return a.favorite ? -1 : 1;
+      if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
       return a.name.localeCompare(b.name);
     }
     if (sortBy === "missing") {
@@ -193,8 +243,9 @@ export function BigPicture({
   coverMap,
   libraryOrder,
   reduceMotion,
+  showTools,
   onLaunch,
-  onToggleFavorite,
+  onTogglePin,
   onOpenFolder,
   onOpenSaveFolder,
   onExit,
@@ -205,20 +256,23 @@ export function BigPicture({
   coverMap: Record<string, string>;
   libraryOrder: string[];
   reduceMotion: boolean;
+  showTools: boolean;
   onLaunch: (game: Game) => void;
-  onToggleFavorite: (game: Game) => void;
+  onTogglePin: (game: Game) => void;
   onOpenFolder: (game: Game) => void;
   onOpenSaveFolder: (game: Game) => void;
   onExit: () => void;
   onToast: (text: string, error?: boolean) => void;
 }) {
+  const TABS = useMemo(() => ALL_TABS.filter(tab => showTools || tab.id !== "explorer"), [showTools]);
   const rootRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const [booting, setBooting] = useState(true);
   const [bootPct, setBootPct] = useState(0);
-  const [bootLabel, setBootLabel] = useState("Starting IntelGen…");
+  const [bootLabel, setBootLabel] = useState("Starting Studio 256…");
   const [screen, setScreen] = useState<Screen>("library");
   const [zone, setZone] = useState<Zone>("stage");
+  const [railFocus, setRailFocus] = useState<Screen>("library");
   const [cursor, setCursor] = useState(0);
   const [listFocus, setListFocus] = useState("place:open");
   const [browseOpen, setBrowseOpen] = useState(false);
@@ -226,7 +280,7 @@ export function BigPicture({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [fullGame, setFullGame] = useState<Game | null>(null);
   const [gameTab, setGameTab] = useState<GameTab>("overview");
-  const [gameFocus, setGameFocus] = useState("gact:play");
+  const [gameFocus, setGameFocus] = useState("gact:back");
   const [confirm, setConfirm] = useState<ConfirmKind | null>(null);
   const [confirmFocus, setConfirmFocus] = useState("confirm:no");
   const [muted, setMuted] = useState(isBpMuted);
@@ -241,12 +295,14 @@ export function BigPicture({
   const [listing, setListing] = useState<ExplorerListing | null>(null);
   const [explorerPath, setExplorerPath] = useState<string | null>(null);
   const [explorerBusy, setExplorerBusy] = useState(false);
+  const [systemSection, setSystemSection] = useState<SystemSection>("overview");
   const [info, setInfo] = useState<SystemInfo | null>(null);
   const [overview, setOverview] = useState<LibraryOverview | null>(null);
   const [overviewLoading, setOverviewLoading] = useState(false);
 
   const screenRef = useRef(screen);
   const zoneRef = useRef(zone);
+  const railFocusRef = useRef(railFocus);
   const cursorRef = useRef(cursor);
   const bootingRef = useRef(booting);
   const selectedIdRef = useRef(selectedId);
@@ -257,16 +313,16 @@ export function BigPicture({
   const openGroupRef = useRef(openGroupId);
   const groupMotionRef = useRef(groupMotion);
   const visibleGroupsRef = useRef<{ group: GameGroup; members: Game[] }[]>([]);
-  const queryRef = useRef(query);
   const listFocusRef = useRef(listFocus);
   const browseFocusRef = useRef(browseFocus);
   const gameFocusRef = useRef(gameFocus);
   const confirmFocusRef = useRef(confirmFocus);
   const stripLenRef = useRef(0);
   const listKeysRef = useRef<string[]>([]);
-  const browseKeysRef = useRef<string[]>([]);
+  const gameKeysRef = useRef<string[]>([]);
   screenRef.current = screen;
   zoneRef.current = zone;
+  railFocusRef.current = railFocus;
   cursorRef.current = cursor;
   bootingRef.current = booting;
   selectedIdRef.current = selectedId;
@@ -276,7 +332,6 @@ export function BigPicture({
   gamesRef.current = games;
   openGroupRef.current = openGroupId;
   groupMotionRef.current = groupMotion;
-  queryRef.current = query;
   listFocusRef.current = listFocus;
   browseFocusRef.current = browseFocus;
   gameFocusRef.current = gameFocus;
@@ -311,7 +366,7 @@ export function BigPicture({
     const tick = (t: number) => {
       const p = Math.min(1, (t - started) / bootDur);
       setBootPct(Math.round(p * 100));
-      if (p < 0.3) setBootLabel("Starting IntelGen…");
+      if (p < 0.3) setBootLabel("Starting Studio 256…");
       else if (p < 0.62) setBootLabel("Loading library…");
       else if (p < 0.88) setBootLabel("Preparing stage…");
       else setBootLabel("Ready");
@@ -344,7 +399,7 @@ export function BigPicture({
           group,
           members: group.gameIds
             .map((id) => filtered.find((g) => g.id === id))
-            .filter((g): g is Game => Boolean(g)),
+            .filter((g): g is Game => Boolean(g) && !g?.pinned),
         }))
         .filter((item) => item.members.length > 0),
     [groups, filtered],
@@ -425,7 +480,7 @@ export function BigPicture({
   }, [screen, explorerPath, onToast]);
 
   useEffect(() => {
-    if (screen !== "system") return;
+    if (screen !== "explorer" || !showTools) return;
     let cancelled = false;
     const load = () => {
       invoke<SystemInfo>("system_info")
@@ -440,7 +495,7 @@ export function BigPicture({
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [screen]);
+  }, [screen, showTools]);
 
   useEffect(() => {
     if (screen !== "stats") return;
@@ -486,7 +541,9 @@ export function BigPicture({
 
   const listKeys = useMemo(() => {
     if (screen === "explorer") {
-      const keys = ["place:open", ...places.map((p) => `place:${p.id}`)];
+      const keys = SYSTEM_SECTIONS.map(section => `hardware:${section.id}`);
+      if (systemSection !== "files") return keys;
+      keys.push("place:open", ...places.map((p) => `place:${p.id}`));
       if (listing?.path || listing?.parent) keys.push("file:up");
       if (listing) for (const e of listing.entries) keys.push(`file:${e.path}`);
       return keys;
@@ -500,35 +557,47 @@ export function BigPicture({
       return ["power:leave", "power:sleep", "power:lock", "power:restart", "power:shutdown"];
     }
     return [];
-  }, [screen, places, listing, overview]);
+  }, [screen, places, listing, overview, systemSection]);
   listKeysRef.current = listKeys;
 
-  const browseKeys = useMemo(
-    () => ["browse:search", ...BP_FILTERS.map((f) => `filter:${f.id}`), ...BP_SORTS.map((s) => `sort:${s.id}`)],
-    [],
-  );
-  browseKeysRef.current = browseKeys;
+  const gameKeys = useMemo(() => {
+    const keys = ["gact:play", "gact:fav"];
+    if (selected?.installPath || fullGame?.installPath) keys.push("gact:folder");
+    if (fullGame?.saveFolder) keys.push("gact:save");
+    return keys;
+  }, [selected, fullGame]);
+  gameKeysRef.current = gameKeys;
 
   useEffect(() => {
-    if (screen !== "library") setListFocus(listKeys[0] ?? "place:open");
+    if (screen === "explorer") {
+      const firstFile = listKeys.find((k) => k.startsWith("file:"));
+      setListFocus(previous => listKeys.includes(previous) ? previous : firstFile ?? listKeys[0] ?? "place:open");
+    } else if (screen !== "library") setListFocus(listKeys[0] ?? "place:open");
     if (zoneRef.current === "tabs") return;
     setZone(screen === "library" ? "stage" : "list");
   }, [screen, listKeys]);
 
   const goScreen = useCallback((next: Screen) => {
     setScreen(next);
+    setRailFocus(next);
     setSelectedId(null);
     setBrowseOpen(false);
     setConfirm(null);
   }, []);
 
-  const cycleScreen = useCallback((dir: 1 | -1) => {
+  const cycleScreen = useCallback((dir: 1 | -1, wrap = true) => {
     const i = TABS.findIndex((t) => t.id === screenRef.current);
-    const next = TABS[(i + dir + TABS.length) % TABS.length];
+    let next = i + dir;
+    if (wrap) next = (next + TABS.length) % TABS.length;
+    else if (next < 0 || next >= TABS.length) {
+      playMove();
+      setZone("tabs");
+      return;
+    }
     playMove();
-    goScreen(next.id);
-    setZone("tabs");
-  }, [goScreen]);
+    goScreen(TABS[next].id);
+    setZone(TABS[next].id === "library" ? "stage" : "list");
+  }, [goScreen, TABS]);
 
   const toggleMute = useCallback(() => {
     const next = !isBpMuted();
@@ -572,6 +641,9 @@ export function BigPicture({
     }
     playConfirm();
     setSelectedId(item.game.id);
+    setGameTab("overview");
+    setGameFocus("gact:back");
+    setZone("list");
   }, [reduceMotion, strip]);
 
   const closeOpenGroup = useCallback(() => {
@@ -618,6 +690,11 @@ export function BigPicture({
 
   const activateList = useCallback(
     (key: string) => {
+      if (key.startsWith("hardware:")) {
+        const section = SYSTEM_SECTIONS.find(item => item.id === key.slice(9));
+        if (section) { playConfirm(); setSystemSection(section.id); }
+        return;
+      }
       if (key === "place:open") {
         playConfirm();
         invoke("open_explorer", { path: listingRef.current?.path ?? explorerPath })
@@ -724,7 +801,7 @@ export function BigPicture({
       }
       if (key === "gact:fav") {
         playConfirm();
-        onToggleFavorite(game);
+        onTogglePin(game);
         return;
       }
       if (key === "gact:folder") {
@@ -742,57 +819,8 @@ export function BigPicture({
         setSelectedId(null);
       }
     },
-    [onLaunch, onOpenFolder, onOpenSaveFolder, onToast, onToggleFavorite],
+    [onLaunch, onOpenFolder, onOpenSaveFolder, onToast, onTogglePin],
   );
-
-  const goBack = useCallback(() => {
-    if (bootingRef.current) {
-      skipBoot();
-      return;
-    }
-    if (confirmRef.current) {
-      playBack();
-      setConfirm(null);
-      return;
-    }
-    if (selectedIdRef.current) {
-      playBack();
-      setSelectedId(null);
-      return;
-    }
-    if (browseOpenRef.current) {
-      playBack();
-      setBrowseOpen(false);
-      return;
-    }
-    if (screenRef.current === "explorer" && listingRef.current?.path) {
-      playBack();
-      setExplorerPath(listingRef.current.parent);
-      return;
-    }
-    if (openGroupRef.current) {
-      closeOpenGroup();
-      return;
-    }
-    if (queryRef.current) {
-      playBack();
-      setQuery("");
-      return;
-    }
-    if (screenRef.current !== "library") {
-      playBack();
-      goScreen("library");
-      return;
-    }
-    if (zoneRef.current === "tabs") {
-      playMove();
-      setZone("stage");
-      return;
-    }
-    playBack();
-    setConfirm("exit");
-    setConfirmFocus("confirm:no");
-  }, [closeOpenGroup, goScreen, skipBoot]);
 
   const moveList = (dx: number, dy: number) => {
     const keys = listKeysRef.current;
@@ -806,6 +834,87 @@ export function BigPicture({
     if (keys[next] !== listFocusRef.current) playMove();
     setListFocus(keys[next]);
   };
+
+  const moveExplorer = (dx: number, dy: number) => {
+    const keys = listKeysRef.current;
+    const places = keys.filter((k) => k.startsWith("place:"));
+    const files = keys.filter((k) => k.startsWith("file:"));
+    const cur = listFocusRef.current;
+    if (places.includes(cur)) {
+      const i = places.indexOf(cur);
+      if (dx !== 0) {
+        const next = i + dx;
+        if (next < 0 || next >= places.length) return;
+        playMove();
+        setListFocus(places[next]);
+        return;
+      }
+      if (dy < 0) {
+        setListFocus("hardware:files");
+        return;
+      }
+      if (dy > 0 && files.length) {
+        playMove();
+        setListFocus(files[0]);
+      }
+      return;
+    }
+    if (files.includes(cur)) {
+      const i = Math.max(0, files.indexOf(cur));
+      if (dy < 0 && i <= 0 && places.length) {
+        playMove();
+        setListFocus(places[0]);
+        return;
+      }
+      const step = dy !== 0 ? dy : dx;
+      const next = Math.max(0, Math.min(files.length - 1, i + step));
+      if (files[next] !== cur) playMove();
+      setListFocus(files[next]);
+      return;
+    }
+    const fallback = files[0] ?? places[0] ?? keys[0];
+    if (fallback) {
+      playMove();
+      setListFocus(fallback);
+    }
+  };
+
+  const enterRailContent = useCallback(() => {
+    const next = railFocusRef.current;
+    if (screenRef.current !== next) goScreen(next);
+    setZone(selectedIdRef.current || next !== "library" ? "list" : "stage");
+  }, [goScreen]);
+
+  const focusRail = useCallback(() => {
+    playMove();
+    setRailFocus(screenRef.current);
+    setZone("tabs");
+  }, []);
+
+  const applyOsk = useCallback((token: string) => {
+    if (token === "space") {
+      playConfirm();
+      setQuery((q) => `${q} `);
+      return;
+    }
+    if (token === "bksp") {
+      playMove();
+      setQuery((q) => q.slice(0, -1));
+      return;
+    }
+    if (token === "clear") {
+      playConfirm();
+      setQuery("");
+      return;
+    }
+    if (token === "done") {
+      playBack();
+      setBrowseOpen(false);
+      return;
+    }
+    playConfirm();
+    setQuery((q) => q + token.toLowerCase());
+  }, []);
 
   const handlePad = useCallback(
     (action: PadAction) => {
@@ -838,60 +947,33 @@ export function BigPicture({
         }
         return;
       }
-      if (action === "lb") {
-        setSelectedId(null);
-        setBrowseOpen(false);
-        cycleScreen(-1);
-        return;
-      }
-      if (action === "rb") {
-        setSelectedId(null);
-        setBrowseOpen(false);
-        cycleScreen(1);
-        return;
-      }
-      if (selectedIdRef.current) {
-        const keys = [
-          "gact:play",
-          "gact:fav",
-          "gact:folder",
-          "gact:save",
-          "gact:back",
-          "gtab:overview",
-          "gtab:sessions",
-        ];
-        if (action === "left" || action === "right") {
-          const acts = keys.filter((k) => k.startsWith("gact:"));
-          let i = acts.indexOf(gameFocusRef.current);
-          if (i < 0) i = 0;
-          const n = Math.max(0, Math.min(acts.length - 1, i + (action === "right" ? 1 : -1)));
-          if (acts[n] !== gameFocusRef.current) playMove();
-          setGameFocus(acts[n]);
-        } else if (action === "up") {
-          playMove();
-          setGameFocus("gtab:overview");
-        } else if (action === "down") {
-          playMove();
-          setGameFocus("gact:play");
-        } else if (action === "confirm") activateGame(gameFocusRef.current);
-        else if (action === "back") goBack();
-        else if (action === "favorite") activateGame("gact:fav");
-        else if (action === "alt") activateGame("gact:play");
-        return;
-      }
       if (browseOpenRef.current) {
+        if (action === "back") {
+          playBack();
+          setBrowseOpen(false);
+          searchRef.current?.blur();
+          return;
+        }
+        if (action === "lb") {
+          setBrowseOpen(false);
+          cycleScreen(-1);
+          return;
+        }
+        if (action === "rb") {
+          setBrowseOpen(false);
+          cycleScreen(1);
+          return;
+        }
         if (isTypingTarget(document.activeElement) && (action === "left" || action === "right")) return;
-        const keys = browseKeysRef.current;
-        let idx = keys.indexOf(browseFocusRef.current);
-        if (idx < 0) idx = 0;
         if (action === "left" || action === "right" || action === "up" || action === "down") {
           const dy = action === "down" ? 1 : action === "up" ? -1 : 0;
           const dx = action === "right" ? 1 : action === "left" ? -1 : 0;
-          const next = Math.max(0, Math.min(keys.length - 1, idx + dx + dy));
-          if (keys[next] !== browseFocusRef.current) playMove();
-          setBrowseFocus(keys[next]);
-          if (keys[next] === "browse:search") searchRef.current?.focus();
-          else searchRef.current?.blur();
+          const next = moveOnGrid(browseGrid(), browseFocusRef.current, dx, dy);
+          if (!next) return;
+          if (next !== browseFocusRef.current) playMove();
+          setBrowseFocus(next);
+          if (next === "browse:search") return;
+          searchRef.current?.blur();
         } else if (action === "confirm") {
           const key = browseFocusRef.current;
           if (key.startsWith("filter:")) {
@@ -900,11 +982,64 @@ export function BigPicture({
           } else if (key.startsWith("sort:")) {
             playConfirm();
             setSortBy(key.slice(5) as SortMode);
-          } else searchRef.current?.focus();
-        } else if (action === "back" || action === "alt") {
-          playBack();
-          setBrowseOpen(false);
+          } else if (key.startsWith("key:")) {
+            const [, rs, cs] = key.split(":");
+            const token = OSK_ROWS[Number(rs)]?.[Number(cs)];
+            if (token) applyOsk(token);
+          } else {
+            playConfirm();
+            searchRef.current?.focus();
+          }
         }
+        return;
+      }
+      if (action === "lb") {
+        setSelectedId(null);
+        cycleScreen(-1);
+        return;
+      }
+      if (action === "rb") {
+        setSelectedId(null);
+        cycleScreen(1);
+        return;
+      }
+      if (action === "back") {
+        if (zoneRef.current === "tabs") {
+          playMove();
+          enterRailContent();
+          return;
+        }
+        focusRail();
+        return;
+      }
+      if (zoneRef.current === "tabs") {
+        const i = TABS.findIndex((t) => t.id === railFocusRef.current);
+        if (action === "up" || action === "down") {
+          const dir = action === "down" ? 1 : -1;
+          const next = (i + dir + TABS.length) % TABS.length;
+          playMove();
+          setRailFocus(TABS[next].id);
+        } else if (action === "confirm" || action === "right") {
+          playConfirm();
+          enterRailContent();
+        }
+        return;
+      }
+      if (selectedIdRef.current) {
+        const rows = gameNavRows(gameKeysRef.current);
+        const cur = gameFocusRef.current;
+        if (action === "left" || action === "right" || action === "up" || action === "down") {
+          const dy = action === "down" ? 1 : action === "up" ? -1 : 0;
+          const dx = action === "right" ? 1 : action === "left" ? -1 : 0;
+          const next = moveOnGrid(rows, cur, dx, dy);
+          if (!next) return;
+          if (next !== cur) playMove();
+          setGameFocus(next);
+          if (next === "gtab:overview") setGameTab("overview");
+          else if (next === "gtab:sessions") setGameTab("sessions");
+        } else if (action === "confirm") activateGame(cur);
+        else if (action === "favorite") activateGame("gact:fav");
+        else if (action === "alt") activateGame("gact:play");
         return;
       }
       if (action === "menu") {
@@ -916,28 +1051,14 @@ export function BigPicture({
         if (screenRef.current === "library") {
           playConfirm();
           setBrowseOpen(true);
-          setBrowseFocus("browse:search");
-          window.setTimeout(() => searchRef.current?.focus(), 0);
+          setBrowseFocus("key:1:0");
+          searchRef.current?.blur();
         } else if (action === "alt" && screenRef.current === "explorer") {
           playConfirm();
           invoke("open_explorer", { path: listingRef.current?.path ?? explorerPath }).catch((e) => {
             playError();
             onToast(String(e), true);
           });
-        }
-        return;
-      }
-      if (action === "back") {
-        goBack();
-        return;
-      }
-
-      if (zoneRef.current === "tabs") {
-        if (action === "up" || action === "left") cycleScreen(-1);
-        else if (action === "right") cycleScreen(1);
-        else if (action === "down" || action === "confirm") {
-          playMove();
-          setZone(screenRef.current === "library" ? "stage" : "list");
         }
         return;
       }
@@ -956,10 +1077,32 @@ export function BigPicture({
             setCursor((c) => (c + 1) % n);
           }
         } else if (action === "up") {
-          playMove();
-          setZone("tabs");
+          openCenteredInfo();
+        } else if (action === "down") {
+          if (openGroupRef.current) closeOpenGroup();
         } else if (action === "confirm") playCentered();
         else if (action === "favorite") openCenteredInfo();
+        return;
+      }
+
+      if (screenRef.current === "explorer" && systemSection !== "files") {
+        if (listFocusRef.current === "hardware:details") {
+          if (action === "left") setListFocus(`hardware:${systemSection}`);
+          else if (action === "up" || action === "down") {
+            const pane = rootRef.current?.querySelector(".system-layout .settings-body");
+            pane?.scrollBy({ top: (action === "down" ? 1 : -1) * pane.clientHeight * .65, behavior: reduceMotion ? "instant" : "smooth" });
+          }
+          return;
+        }
+        if (action === "right") { setListFocus("hardware:details"); return; }
+      }
+
+      if (screenRef.current === "explorer" && systemSection === "files" && !listFocusRef.current.startsWith("hardware:")) {
+        if (action === "left") moveExplorer(-1, 0);
+        else if (action === "right") moveExplorer(1, 0);
+        else if (action === "up") moveExplorer(0, -1);
+        else if (action === "down") moveExplorer(0, 1);
+        else if (action === "confirm") activateList(listFocusRef.current);
         return;
       }
 
@@ -982,20 +1125,25 @@ export function BigPicture({
         const game = gamesRef.current.find((g) => g.id === id);
         if (game) {
           playConfirm();
-          onToggleFavorite(game);
+          onTogglePin(game);
         }
       }
     },
     [
       activateGame,
       activateList,
+      applyOsk,
+      closeOpenGroup,
       cycleScreen,
+      enterRailContent,
       explorerPath,
-      goBack,
+      systemSection,
+      reduceMotion,
+      focusRail,
       goScreen,
       onExit,
       onToast,
-      onToggleFavorite,
+      onTogglePin,
       openCenteredInfo,
       playCentered,
       skipBoot,
@@ -1013,6 +1161,27 @@ export function BigPicture({
           (e.target as HTMLElement).blur();
           if (browseOpenRef.current) setBrowseOpen(false);
         }
+        return;
+      }
+      if (
+        screenRef.current === "explorer" &&
+        !browseOpenRef.current &&
+        !confirmRef.current &&
+        !bootingRef.current
+      ) {
+        const padKeys: Record<string, PadAction | undefined> = {
+          Escape: "back",
+          Enter: "confirm",
+          ArrowLeft: "left",
+          ArrowRight: "right",
+          ArrowUp: "up",
+          ArrowDown: "down",
+        };
+        const action = padKeys[e.key];
+        if (!action) return;
+        e.preventDefault();
+        e.stopPropagation();
+        handlePad(action);
         return;
       }
       const map: Record<string, PadAction | undefined> = {
@@ -1059,18 +1228,6 @@ export function BigPicture({
     return () => window.removeEventListener("keydown", onKey, true);
   }, [goScreen, handlePad, toggleMute]);
 
-  const ramPct =
-    info && info.ramTotalBytes > 0
-      ? Math.min(100, (info.ramUsedBytes / info.ramTotalBytes) * 100)
-      : 0;
-
-  const gameKeys = (() => {
-    const keys = ["gact:play", "gact:fav"];
-    if (selected?.installPath || fullGame?.installPath) keys.push("gact:folder");
-    if (fullGame?.saveFolder) keys.push("gact:save");
-    keys.push("gact:back");
-    return keys;
-  })();
 
   return (
     <div
@@ -1086,8 +1243,8 @@ export function BigPicture({
 
       {booting && (
         <div className="bp-boot" onClick={skipBoot}>
-          <img src="/intelgen-icon.png" alt="" className="bp-boot-mark" />
-          <h1 className="bp-boot-title">IntelGen</h1>
+          <img src="/studio-256-cartridge.png" alt="" className="bp-boot-mark" />
+          <h1 className="bp-boot-title">Studio 256</h1>
           <p className="bp-boot-sub">Big Picture</p>
           <div className="bp-boot-bar" role="progressbar" aria-valuenow={bootPct}>
             <span style={{ width: `${bootPct}%` }} />
@@ -1101,24 +1258,24 @@ export function BigPicture({
 
       <header className="bp-hud">
         <div className="bp-hud-brand">
-          <img src="/intelgen-icon.png" alt="" className="bp-hud-mark" />
-          <span className="bp-hud-name">IntelGen</span>
+          <img src="/studio-256-cartridge.png" alt="" className="bp-hud-mark" />
+          <span className="bp-hud-name">Studio 256</span>
         </div>
         <div className="bp-hud-clock">{time}</div>
       </header>
 
-      <div className="bp-body">
+      <div className={`bp-body${zone === "tabs" ? " is-rail-hot" : ""}`}>
         <nav className={`bp-rail${zone === "tabs" ? " is-hot" : ""}`} aria-label="Sections">
           {TABS.map((t) => (
             <button
               key={t.id}
               type="button"
-              className={`bp-rail-btn${screen === t.id ? " is-active" : ""}`}
+              className={`bp-rail-btn${screen === t.id ? " is-active" : ""}${zone === "tabs" && railFocus === t.id ? " is-focus" : ""}`}
               aria-current={screen === t.id ? "page" : undefined}
               onClick={() => {
                 playConfirm();
                 goScreen(t.id);
-                setZone(t.id === "library" ? "stage" : "list");
+                setZone("tabs");
               }}
             >
               <span className="bp-rail-icon" aria-hidden>
@@ -1238,8 +1395,8 @@ export function BigPicture({
                           center.game.playtimeMinutes > 0 ? `  ·  ${formatPlaytime(center.game.playtimeMinutes)}` : ""
                         }`}
                   </p>
-                  <button type="button" className="bp-play" onClick={playCentered}>
-                    {center.kind === "folder" ? "Open folder" : "Play"}
+                  <button type="button" className="bp-play" disabled={center.kind === "game" && gameBusy(center.game)} onClick={playCentered}>
+                    {center.kind === "folder" ? "Open folder" : center.game.missing ? "Game details" : launchLabel(center.game)}
                   </button>
                 </div>
               )}
@@ -1248,7 +1405,20 @@ export function BigPicture({
         </div>
       )}
 
-      {!selected && screen === "explorer" && (
+      {!selected && screen === "explorer" && <section className="bp-panel">
+        <h2 className="bp-panel-title">System</h2>
+        <div className="settings-layout system-layout">
+          <nav className="settings-nav" aria-label="System sections">{SYSTEM_SECTIONS.map(item =>
+            <button type="button" key={item.id}
+              className={`settings-nav-btn${systemSection === item.id ? " active" : ""}${zone === "list" && listFocus === `hardware:${item.id}` ? " is-focus" : ""}`}
+              onClick={() => { setListFocus(`hardware:${item.id}`); activateList(`hardware:${item.id}`); }}>{item.label}</button>)}</nav>
+          <div key={systemSection} className={`settings-body${listFocus === "hardware:details" && zone === "list" ? " is-focus" : ""}`} role="region" aria-label="Component details">
+            {systemSection === "files" ? <p className="system-note">Browse folders below, or open Windows File Explorer.</p>
+              : info ? <><p className="system-note">→ Details · ↑ / ↓ Scroll · ← Sections</p><SystemDetails info={info} section={systemSection} /></> : <p>Reading hardware details…</p>}
+          </div>
+        </div>
+      </section>}
+      {!selected && screen === "explorer" && systemSection === "files" && (
         <ExplorerScreen
           places={places}
           listing={listing}
@@ -1275,14 +1445,15 @@ export function BigPicture({
             if (g) {
               playConfirm();
               setSelectedId(g.id);
+              setGameTab("overview");
+              setGameFocus("gact:back");
+              setZone("list");
             }
           }}
         />
       )}
       {!selected && screen === "system" && (
         <SystemScreen
-          info={info}
-          ramPct={ramPct}
           focus={listFocus}
           muted={muted}
           onMute={toggleMute}
@@ -1349,6 +1520,27 @@ export function BigPicture({
                 </button>
               ))}
             </div>
+            <p className="bp-browse-label">Keyboard</p>
+            <div className="bp-osk" aria-label="On-screen keyboard">
+              {OSK_ROWS.map((row, r) => (
+                <div key={r} className="bp-osk-row">
+                  {row.map((token, c) => {
+                    const key = `key:${r}:${c}`;
+                    const wide = token === "space" || token === "bksp" || token === "clear" || token === "done";
+                    return (
+                      <button
+                        key={key}
+                        type="button"
+                        className={`bp-osk-key${wide ? " is-wide" : ""}${browseFocus === key ? " is-focus" : ""}`}
+                        onClick={() => applyOsk(token)}
+                      >
+                        {oskLabel(token)}
+                      </button>
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       )}
@@ -1379,27 +1571,38 @@ export function BigPicture({
 
       <footer className="bp-bar">
         <div className="bp-bar-prompts">
-          {screen === "library" && !selected ? (
+          {browseOpen ? (
             <>
-              <Glyph face="A" label="Play" />
-              <Glyph face="X" label="Info" />
-              <Glyph face="Y" label="Browse" />
+              <Glyph face="A" label="Select" />
+              <Glyph face="B" label="Close" />
+            </>
+          ) : zone === "tabs" ? (
+            <>
+              <Glyph face="A" label="Select" />
               <Glyph face="B" label="Back" />
+              <Glyph face="LB" />
+              <Glyph face="RB" label="Sections" />
+            </>
+          ) : screen === "library" && !selected ? (
+            <>
+              <Glyph face="A" label={center?.kind === "folder" ? "Open" : "Play"} />
+              <Glyph face="Y" label="Browse" />
+              <Glyph face="B" label="Menu" />
               <Glyph face="LB" />
               <Glyph face="RB" label="Sections" />
             </>
           ) : selected ? (
             <>
               <Glyph face="A" label="Select" />
-              <Glyph face="X" label="Favorite" />
-              <Glyph face="B" label="Back" />
+              <Glyph face="X" label="Pin / unpin" />
+              <Glyph face="B" label="Menu" />
               <Glyph face="LB" />
               <Glyph face="RB" label="Sections" />
             </>
           ) : (
             <>
               <Glyph face="A" label="Select" />
-              <Glyph face="B" label="Back" />
+              <Glyph face="B" label="Menu" />
               <Glyph face="LB" />
               <Glyph face="RB" label="Sections" />
             </>
@@ -1439,6 +1642,11 @@ function ExplorerScreen({
   onUp: () => void;
   onEntry: (entry: ExplorerEntry) => void;
 }) {
+  useEffect(() => {
+    document.querySelector(".bp-place.is-focus, .bp-file.is-focus")?.scrollIntoView({
+      block: "nearest",
+    });
+  }, [focus]);
   return (
     <section className="bp-panel">
       <h2 className="bp-panel-title">{listing?.label ?? "Files"}</h2>
@@ -1564,15 +1772,11 @@ function StatsScreen({
 }
 
 function SystemScreen({
-  info,
-  ramPct,
   focus,
   muted,
   onMute,
   onPower,
 }: {
-  info: SystemInfo | null;
-  ramPct: number;
   focus: string;
   muted: boolean;
   onMute: () => void;
@@ -1587,7 +1791,7 @@ function SystemScreen({
   ];
   return (
     <section className="bp-panel">
-      <h2 className="bp-panel-title">System</h2>
+      <h2 className="bp-panel-title">Power</h2>
       <div className="bp-power-row">
         {powers.map((p) => (
           <button
@@ -1604,33 +1808,7 @@ function SystemScreen({
       <button type="button" className="bp-place" onClick={onMute}>
         {muted ? "Sound off" : "Sound on"}
       </button>
-      <dl className="sys-facts bp-facts">
-        <div className="sys-row">
-          <dt>PC</dt>
-          <dd>{info?.hostname || "—"}</dd>
-        </div>
-        <div className="sys-row">
-          <dt>OS</dt>
-          <dd>{[info?.os, info?.osVersion].filter(Boolean).join(" ") || "—"}</dd>
-        </div>
-        <div className="sys-row">
-          <dt>Processor</dt>
-          <dd>{info?.cpu || "—"}</dd>
-        </div>
-        <div className="sys-row">
-          <dt>Graphics</dt>
-          <dd>{info?.gpu || "—"}</dd>
-        </div>
-        <div className="sys-row">
-          <dt>Memory</dt>
-          <dd>
-            {info ? `${formatBytes(info.ramTotalBytes)}  ·  ${formatBytes(info.ramUsedBytes)} in use` : "—"}
-            <div className="ram-meter" aria-hidden>
-              <div className="ram-meter-fill" style={{ width: `${ramPct}%` }} />
-            </div>
-          </dd>
-        </div>
-      </dl>
+
     </section>
   );
 }
@@ -1682,6 +1860,13 @@ function GameDataPage({
   return (
     <div className="bp-gamepage">
       <div className="bp-gamepage-hero">
+        <button
+          type="button"
+          className={`bp-game-back${focus === "gact:back" ? " is-focus" : ""}`}
+          onClick={() => onActivate("gact:back")}
+        >
+          Back
+        </button>
         <div className="bp-sheet-art">
           <div className="cover">
             <CoverImg game={game} override={cover} loading="eager" allowRemote={false} />
@@ -1721,25 +1906,25 @@ function GameDataPage({
             )}
           </dl>
           <div className="bp-sheet-actions">
-            {actionKeys.map((key) => (
+            {actionKeys
+              .filter((key) => key !== "gact:back")
+              .map((key) => (
               <button
                 key={key}
                 type="button"
                 className={`btn${key === "gact:play" ? " btn-primary" : ""}${focus === key ? " is-focus" : ""}`}
-                disabled={key === "gact:play" && game.missing}
+                disabled={key === "gact:play" && (game.missing || gameBusy(game))}
                 onClick={() => onActivate(key)}
               >
                 {key === "gact:play"
-                  ? "Play"
+                  ? launchLabel(game)
                   : key === "gact:fav"
-                    ? game.favorite
-                      ? "Favorited"
-                      : "Favorite"
+                    ? game.pinned
+                      ? "Unpin game"
+                      : "Pin game"
                     : key === "gact:folder"
                       ? "Install folder"
-                      : key === "gact:save"
-                        ? "Save folder"
-                        : "Back"}
+                      : "Save folder"}
               </button>
             ))}
           </div>

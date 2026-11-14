@@ -23,8 +23,8 @@ export function Titlebar({ children, onError }: { children?: ReactNode; onError:
     run(() => event.detail === 2 ? getCurrentWindow().toggleMaximize() : getCurrentWindow().startDragging());
   }}>
     <div className="brand titlebar-brand">
-      <img src="/intelgen-icon.png" className="brand-mark" alt="" draggable={false} />
-      <div className="titlebar-wordmark"><h1 className="brand-name">IntelGen</h1><span className="brand-subtitle">Game Launcher</span></div>
+      <img src="/studio-256-cartridge.png" className="brand-mark" alt="" draggable={false} />
+      <div className="titlebar-wordmark"><h1 className="brand-name">Studio 256</h1><span className="brand-subtitle">Game Launcher</span></div>
     </div>
     <div className="titlebar-content">{children}</div>
     <div className="titlebar-controls">

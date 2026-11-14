@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   CoverChoiceGroup,
@@ -12,6 +12,8 @@ import {
   formatLastPlayed,
   formatPlaytime,
   localCoverUrl,
+  gameBusy,
+  launchLabel,
 } from "../types";
 import { BarChart } from "./Charts";
 import { CoverImg } from "./CoverImg";
@@ -22,9 +24,10 @@ interface Props {
   coverDataUrl?: string | null;
   coverHidden?: boolean;
   onBack: () => void;
-  onLaunch: (game: Game) => void;
+  onLaunch: (game: Game, sourceId?: string) => void;
+  onTogglePin: (game: Game) => void;
+  onRescan: () => void;
   onOpenSaveFolder: (game: Game) => void;
-  onToggleFavorite: (game: Game) => void;
   onRemove: (game: Game) => void;
   onGameUpdated: (game: Game) => void;
   onCoverUpdated?: (id: string, dataUrl: string) => void;
@@ -61,8 +64,9 @@ export function GameDetail({
   coverHidden = false,
   onBack,
   onLaunch,
+  onTogglePin,
+  onRescan,
   onOpenSaveFolder,
-  onToggleFavorite,
   onRemove,
   onGameUpdated,
   onCoverUpdated,
@@ -82,6 +86,14 @@ export function GameDetail({
   const [saveDraft, setSaveDraft] = useState(game.saveFolder ?? "");
   const [coverPick, setCoverPick] = useState<CoverChoiceGroup | null>(null);
   const [full, setFull] = useState<Game>(game);
+  const [copyId, setCopyId] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const chosenCopy = game.copies?.find(copy => copy.id === copyId)
+    ?? game.copies?.find(copy => copy.id === game.preferredCopyId && !copy.missing)
+    ?? game.copies?.find(copy => copy.id === game.id && !copy.missing)
+    ?? game.copies?.find(copy => !copy.missing)
+    ?? game.copies?.[0];
+  const launchDisabled = gameBusy(game) || (chosenCopy?.missing ?? game.missing);
   const pageRef = useRef<HTMLDivElement>(null);
   const nameInputRef = useRef<HTMLInputElement>(null);
   const view =
@@ -118,9 +130,15 @@ export function GameDetail({
     }
   }
 
+  useLayoutEffect(scrollDetailToTop, [game.id]);
+
+  useEffect(() => { void refreshStats(); }, [game.playtimeMinutes, game.launchStatus?.state]);
+
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
+    setCopyId(null);
+    setActionError(null);
     setEditPanel(null);
     setTab("overview");
     setFull(game);
@@ -131,11 +149,6 @@ export function GameDetail({
     setAdminDraft(game.runAsAdmin);
     setSaveDraft(game.saveFolder ?? "");
     refreshStats();
-    scrollDetailToTop();
-    requestAnimationFrame(() => {
-      scrollDetailToTop();
-      requestAnimationFrame(scrollDetailToTop);
-    });
 
     invoke<Game>("get_game", { id: game.id })
       .then((loaded) => {
@@ -244,10 +257,13 @@ export function GameDetail({
     if (!selected || typeof selected !== "string") return;
     setBusy(true);
     try {
-      const updated = await invoke<Game>("set_game_path", { id: game.id, path: selected });
+      await invoke<Game>("set_game_path", { id: chosenCopy?.id ?? game.id, path: selected });
+      const updated = await invoke<Game>("get_game", { id: game.id });
       onGameUpdated(updated);
       setFull(updated);
       setEditPanel(null);
+    } catch (error) {
+      setActionError(String(error));
     } finally {
       setBusy(false);
     }
@@ -469,8 +485,9 @@ export function GameDetail({
             <button
               type="button"
               className="play-btn detail-play"
-              disabled={game.missing}
-              onClick={() => onLaunch(game)}
+              disabled={launchDisabled}
+              aria-label={launchLabel(game)}
+              onClick={() => onLaunch(game, chosenCopy?.id)}
             >
               ▶
             </button>
@@ -526,23 +543,42 @@ export function GameDetail({
             {pathLabel}
           </p>
 
+          {(game.copies?.length ?? 0) > 1 && <div className="copy-controls">
+            <label htmlFor="game-copy">Play via</label>
+            <select id="game-copy" value={chosenCopy?.id ?? ""} disabled={gameBusy(game)} onChange={event => setCopyId(event.target.value)}>
+              {game.copies?.map(copy => <option key={copy.id} value={copy.id}>{STORE_LABELS[copy.store]}{copy.missing ? " · unavailable" : ""}</option>)}
+            </select>
+            <button className="btn" disabled={busy || gameBusy(game) || chosenCopy?.id === game.preferredCopyId || !chosenCopy} onClick={async () => {
+              if (!chosenCopy) return;
+              setBusy(true); setActionError(null);
+              try { onGameUpdated(await invoke<Game>("set_preferred_copy", { id: game.id, sourceId: chosenCopy.id })); }
+              catch (error) { setActionError(String(error)); }
+              finally { setBusy(false); }
+            }}>Use as default</button>
+            <p className="hint">Each store copy and its playtime are kept. Shared imported history is counted once.</p>
+          </div>}
+          {(chosenCopy?.missing ?? game.missing) && <div className="game-recovery" role="status">
+            <p>This installation is unavailable. Reconnect its drive, locate the game, or scan again.</p>
+            {chosenCopy?.installPath && <p className="hint">Last location: {chosenCopy.installPath}</p>}
+            <div className="path-row"><button className="btn" disabled={busy} onClick={() => void handleSetPath()}>Locate game</button><button className="btn" onClick={onRescan}>Retry detection</button></div>
+          </div>}
+          {(actionError || game.launchStatus?.message) && <p className="hint update-error" role="alert">{actionError ?? game.launchStatus?.message}</p>}
+
           <div className="detail-actions">
             <button
               type="button"
               className="btn btn-primary"
-              disabled={game.missing}
-              onClick={() => onLaunch(game)}
+              disabled={launchDisabled}
+              onClick={() => onLaunch(game, chosenCopy?.id)}
             >
-              ▶ Play
+              {launchLabel(game)}
             </button>
             {view.saveFolder ? (
               <button type="button" className="btn" onClick={() => onOpenSaveFolder(game)}>
                 Save folder
               </button>
             ) : null}
-            <button type="button" className="btn" onClick={() => onToggleFavorite(game)}>
-              {game.favorite ? "★ Favorited" : "☆ Favorite"}
-            </button>
+            <button type="button" className="btn" onClick={() => onTogglePin(game)}>{game.pinned ? "Unpin game" : "Pin game"}</button>
             <button type="button" className="btn" onClick={() => setEditPanel("menu")}>
               ✎ Edit
             </button>
@@ -650,7 +686,7 @@ export function GameDetail({
                 .map((s) => (
                   <li key={s.id}>
                     <span>{new Date(s.startedAt).toLocaleString()}</span>
-                    <span>{s.durationMinutes > 0 ? `${s.durationMinutes}m` : "in progress"}</span>
+                    <span>{s.endedAt ? `${s.durationMinutes}m` : "in progress"}</span>
                   </li>
                 ))}
             </ul>

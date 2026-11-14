@@ -2,9 +2,13 @@
 
 ## Unreleased
 
-- **Big Picture** is controller-first: left rail (Library / Files / Stats / System), wrapping 3D game wheel, LB/RB (or Q/E) to change sections.
+- Renamed the app to **Studio 256 Game Launcher** and added the Studio 256 cartridge icon to the desktop, Big Picture, and Windows installer.
+
+- **Big Picture** is controller-first: **B** focuses the left rail (it pops out); up/down highlight, **A** selects. Library: left/right on the wheel, up opens a folder or game info, down closes a folder. Browse uses a smaller filter list plus an on-screen keyboard.
+- Opening Big Picture covers the library first, then the window goes fullscreen.
 - Groups in Big Picture use the same fanned cover stack as the desktop library. Opening a group slides covers out of the fan; closing slides them back in, then the rest of the library slides back onto the wheel.
 - Grouped covers keep that group’s accent border on the desktop grid and in Big Picture, including stacked covers while the group is closed.
 - System power actions (sleep, lock, restart, shut down) ask for confirmation; Cancel is the default.
-- Files stays on the file list with left/right; it does not dump you onto the rail.
-- Release workflow builds the tagged git commit (not the local working tree). Push related frontend and Tauri files together before tagging.
+- Files in Big Picture: left/right move place chips or the file list, up/down moves between those rows, A / Enter selects. Controller B / LB / RB still work; extra keyboard shortcuts are off on that screen.
+- Only one launcher instance is allowed; a second start focuses the existing window (including when it is in the tray).
+- Optional **IGDB** covers and metadata via Twitch Client ID + Secret (Settings → Covers). Identifies the actual game by Steam ID or name — not Discord’s `.exe` matching.

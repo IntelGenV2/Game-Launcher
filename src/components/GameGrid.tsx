@@ -21,6 +21,9 @@ import { GameTile } from "./GameTile";
 import { GroupTile } from "./GroupTile";
 
 interface Props {
+  pinnedOnly?: boolean;
+  layout: "grid" | "list";
+  onTogglePin: (game: Game) => void;
   games: Game[];
   groups: GameGroup[];
   coverMap: Record<string, string>;
@@ -29,7 +32,6 @@ interface Props {
   onExpandedGroupChange: (id: string | null) => void;
   onOpen: (game: Game) => void;
   onLaunch: (game: Game) => void;
-  onToggleFavorite: (game: Game) => void;
   onHide: (game: Game) => void;
   onOpenFolder: (game: Game) => void;
   onAddGame: () => void;
@@ -65,6 +67,9 @@ type DragPreview = {
 };
 
 export function GameGrid({
+  pinnedOnly = false,
+  layout,
+  onTogglePin,
   games,
   groups,
   coverMap,
@@ -73,7 +78,6 @@ export function GameGrid({
   onExpandedGroupChange,
   onOpen,
   onLaunch,
-  onToggleFavorite,
   onHide,
   onOpenFolder,
   onAddGame,
@@ -125,8 +129,10 @@ export function GameGrid({
   dropRef.current = dropTarget;
 
   const groupedIds = useMemo(() => new Set(groups.flatMap((g) => g.gameIds)), [groups]);
+  const pinnedGames = useMemo(() => games.filter(game => game.pinned), [games]);
 
   const groupItems = useMemo(() => {
+    if (pinnedOnly) return [];
     const keys = order.filter((k) => k.startsWith("group:"));
     const items: {
       group: GameGroup;
@@ -139,25 +145,24 @@ export function GameGrid({
       if (!group) continue;
       const members = group.gameIds
         .map((id) => gameById.get(id))
-        .filter((g): g is Game => Boolean(g));
-      const visible = members.filter((m) => games.some((g) => g.id === m.id));
-      if (members.length > 0 && visible.length === 0) continue;
+        .filter((g): g is Game => Boolean(g) && !g?.pinned);
+      if (group.gameIds.length > 0 && members.length === 0) continue;
       items.push({
         group,
-        members: visible,
+        members,
         expanded: expandedGroupId === group.id,
         accent: groupAccent(group.id),
       });
     }
     return items;
-  }, [order, groupById, gameById, games, expandedGroupId]);
+  }, [order, groupById, gameById, games, expandedGroupId, pinnedOnly]);
 
   const ungroupedGames = useMemo(() => {
     const keys = order.filter((k) => k.startsWith("game:"));
     const list: Game[] = [];
     for (const key of keys) {
       const game = gameById.get(key.slice(5));
-      if (!game || groupedIds.has(game.id)) continue;
+      if (!game || game.pinned || groupedIds.has(game.id)) continue;
       if (!games.some((g) => g.id === game.id)) continue;
       list.push(game);
     }
@@ -174,7 +179,7 @@ export function GameGrid({
         .getPropertyValue("--card-min")
         .trim();
       const min = parseFloat(minRaw) || 150;
-      setCols(Math.max(1, Math.floor((el.clientWidth + gap) / (min + gap))));
+      setCols(layout === "list" ? 1 : Math.max(1, Math.floor((el.clientWidth + gap) / (min + gap))));
     };
     measure();
     const ro = new ResizeObserver(measure);
@@ -188,7 +193,7 @@ export function GameGrid({
       ro.disconnect();
       mo.disconnect();
     };
-  }, [ungroupedGames.length, groupItems.length]);
+  }, [ungroupedGames.length, groupItems.length, layout, pinnedOnly]);
 
   const [visibleRange, setVisibleRange] = useState({ from: 0, to: 24, rowH: 260 });
   useEffect(() => {
@@ -200,7 +205,9 @@ export function GameGrid({
       const c = Math.max(1, cols);
       const minRaw = getComputedStyle(document.documentElement).getPropertyValue("--card-min").trim();
       const min = parseFloat(minRaw) || 150;
-      const rowH = Math.max(180, min * 1.65);
+      const gap = parseFloat(getComputedStyle(grid).rowGap) || 0;
+      const tile = grid.querySelector<HTMLElement>(".tile");
+      const rowH = tile ? tile.offsetHeight + gap : layout === "list" ? 88 : Math.max(180, min * 1.65);
       const gridRect = grid.getBoundingClientRect();
       const scrollerRect = scroller.getBoundingClientRect();
       const gridTop = gridRect.top - scrollerRect.top + scroller.scrollTop;
@@ -215,9 +222,8 @@ export function GameGrid({
           to = Math.max(to, idx + c + 1);
         }
       }
-      from = Math.max(0, from);
-      to = Math.min(ungroupedGames.length, to);
-      if (to - from > 36) to = from + 36;
+      from = Math.max(0, Math.floor(Math.min(from, Math.max(0, ungroupedGames.length - 1)) / c) * c);
+      to = Math.min(ungroupedGames.length, Math.ceil(to / c) * c);
       setVisibleRange((prev) =>
         prev.from === from && prev.to === to && prev.rowH === rowH ? prev : { from, to, rowH },
       );
@@ -229,19 +235,20 @@ export function GameGrid({
       scroller.removeEventListener("scroll", update);
       window.removeEventListener("resize", update);
     };
-  }, [cols, ungroupedGames, focusKey, active]);
+  }, [cols, ungroupedGames, focusKey, active, layout]);
 
   const focusables = useMemo(() => {
     const keys: string[] = [];
     for (const item of groupItems) {
       keys.push(`group:${item.group.id}`);
       if (item.expanded) {
-        for (const g of item.members) keys.push(`game:${g.id}`);
+        for (const g of item.members) keys.push(`member:${g.id}`);
       }
     }
+    for (const g of pinnedGames) keys.push(`game:${g.id}`);
     for (const g of ungroupedGames) keys.push(`game:${g.id}`);
     return keys;
-  }, [groupItems, ungroupedGames]);
+  }, [groupItems, pinnedGames, ungroupedGames]);
 
   useEffect(() => {
     onFocusablesChange?.(focusables);
@@ -409,7 +416,7 @@ export function GameGrid({
         ? 1
         : cols - remainder;
 
-  if (groupItems.length === 0 && ungroupedGames.length === 0) {
+  if (groupItems.length === 0 && ungroupedGames.length === 0 && pinnedGames.length === 0) {
     return (
       <div className="empty empty-filter">
         <div className="empty-art" aria-hidden>
@@ -431,14 +438,14 @@ export function GameGrid({
       {groupItems.length > 0 && (
         <section className="library-section groups-section">
           <h3 className="section-label">Groups</h3>
-          <div className="game-grid groups-grid">
+          <div className={layout === "list" ? "library-list groups-list" : "game-grid groups-grid"}>
             {groupItems.map((item, index) => {
               if (item.expanded) {
                 return (
                   <div key={item.group.id} className="group-expand-band">
                     <button
                       type="button"
-                      className={`tile group-collapse-tile${
+                      className={`tile group-collapse-tile${layout === "list" ? " tile-list group-list-collapse" : ""}${
                         dropKey === `group:${item.group.id}` ? " drop-target" : ""
                       }${focusKey === `group:${item.group.id}` ? " tile-focused" : ""}`}
                       style={
@@ -463,6 +470,8 @@ export function GameGrid({
                     </button>
                     {item.members.map((game, i) => (
                       <GameTile
+                        layout={layout}
+                        onTogglePin={onTogglePin}
                         key={`${item.group.id}:${game.id}`}
                         game={game}
                         index={i}
@@ -471,13 +480,13 @@ export function GameGrid({
                         inGroup={item.group}
                         groupAccent={item.accent}
                         expandIndex={i}
-                        focusActive={focusKey === `game:${game.id}`}
+                        focusActive={focusKey === `member:${game.id}`}
                         selectMode={selectMode}
                         selected={selectedIds?.has(game.id) ?? false}
                         onToggleSelect={onToggleSelect}
                         onOpen={onOpen}
                         onLaunch={onLaunch}
-                        onToggleFavorite={onToggleFavorite}
+
                         onHide={onHide}
                         onOpenFolder={onOpenFolder}
                         onOpenSaveFolder={onOpenSaveFolder}
@@ -492,6 +501,7 @@ export function GameGrid({
 
               return (
                 <GroupTile
+                  layout={layout}
                   key={item.group.id}
                   group={item.group}
                   members={item.members}
@@ -515,8 +525,20 @@ export function GameGrid({
       )}
 
       <section className="library-section games-section">
-        {groupItems.length > 0 && <h3 className="section-label">Games</h3>}
-        <div className="game-grid" ref={gamesGridRef}>
+        {pinnedGames.length > 0 && <div className="pinned-games">
+          <h3 className="section-label">Pinned games</h3>
+          <div className={layout === "list" ? "library-list" : "game-grid"}>
+            {pinnedGames.map((game, index) => <GameTile key={game.id} game={game} index={index}
+              layout={layout} onTogglePin={onTogglePin} coverDataUrl={coverMap[game.id]} groups={groups}
+              focusActive={focusKey === `game:${game.id}`} selectMode={selectMode} selected={selectedIds?.has(game.id)}
+              onToggleSelect={onToggleSelect} onOpen={onOpen} onLaunch={onLaunch}
+              onHide={onHide} onOpenFolder={onOpenFolder} onOpenSaveFolder={onOpenSaveFolder}
+              onAddToGroup={onRequestAddToGroup} onCreateGroup={onCreateGroup} />)}
+          </div>
+        </div>}
+        {!pinnedOnly && <>
+        {(groupItems.length > 0 || pinnedGames.length > 0) && <h3 className="section-label">Games</h3>}
+        <div className={layout === "list" ? "library-list" : "game-grid"} ref={gamesGridRef}>
           {visibleRange.from > 0 ? (
             <div
               className="grid-spacer"
@@ -532,6 +554,8 @@ export function GameGrid({
             const layoutKey = gameOrderKey(game.id);
             return (
               <GameTile
+                layout={layout}
+                onTogglePin={onTogglePin}
                 key={game.id}
                 game={game}
                 index={index}
@@ -548,7 +572,7 @@ export function GameGrid({
                 }
                 onOpen={onOpen}
                 onLaunch={onLaunch}
-                onToggleFavorite={onToggleFavorite}
+
                 onHide={onHide}
                 onOpenFolder={onOpenFolder}
                 onOpenSaveFolder={onOpenSaveFolder}
@@ -583,6 +607,7 @@ export function GameGrid({
             </button>
           ))}
         </div>
+        </>}
       </section>
 
       {preview && (

@@ -85,7 +85,7 @@ pub fn lookup(auth: &IgdbAuth, name: &str, steam_id: Option<&str>) -> Result<Opt
 fn client() -> Result<reqwest::blocking::Client> {
     Ok(reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(20))
-        .user_agent("IntelGenGameLauncher/0.3 (igdb)")
+        .user_agent("Studio256GameLauncher/0.3 (igdb)")
         .build()?)
 }
 

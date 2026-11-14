@@ -9,6 +9,7 @@ import {
 } from "./TileContextMenu";
 
 interface Props {
+  layout?: "grid" | "list";
   group: GameGroup;
   members: Game[];
   coverMap: Record<string, string>;
@@ -24,6 +25,7 @@ interface Props {
 }
 
 export function GroupTile({
+  layout = "grid",
   group,
   members,
   coverMap,
@@ -74,7 +76,7 @@ export function GroupTile({
 
   return (
     <div
-      className={`tile group-tile${dropActive ? " drop-target" : ""}${
+      className={`tile group-tile${layout === "list" ? " tile-list group-list" : ""}${dropActive ? " drop-target" : ""}${
         dragActive ? " tile-dragging" : ""
       }${focusActive ? " tile-focused" : ""}${menuOpen ? " menu-open" : ""}`}
       style={
@@ -97,7 +99,7 @@ export function GroupTile({
         onOpen();
       }}
       onKeyDown={(e) => {
-        if (e.key === "Enter") {
+        if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) {
           e.preventDefault();
           onOpen();
         }
@@ -175,6 +177,11 @@ export function GroupTile({
         </button>
       </TileContextMenu>
 
+      {layout === "list" && <div className="tile-list-controls">
+        <button type="button" className="btn" aria-label={`More options for ${group.name}`}
+          onClick={event => { event.stopPropagation(); openMenu(anchorFromElement(event.currentTarget)); }}>⋯</button>
+        <span aria-hidden="true">›</span>
+      </div>}
       <div className="tile-title">{group.name}</div>
       <div className="tile-store">
         {members.length} {members.length === 1 ? "game" : "games"}

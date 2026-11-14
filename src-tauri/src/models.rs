@@ -76,6 +76,12 @@ pub struct Game {
     #[serde(default)]
     pub cover_source: Option<String>,
     pub favorite: bool,
+    #[serde(default)]
+    pub pinned: bool,
+    #[serde(default)]
+    pub copies: Vec<GameCopy>,
+    #[serde(default)]
+    pub preferred_copy_id: Option<String>,
     pub hidden: bool,
     pub missing: bool,
     pub playtime_minutes: i64,
@@ -124,6 +130,25 @@ pub struct CoverChoiceGroup {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GameCopy {
+    pub id: String,
+    pub store: Store,
+    pub missing: bool,
+    pub install_path: Option<String>,
+    pub playtime_minutes: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LaunchStatus {
+    pub game_id: String,
+    pub source_id: String,
+    pub state: String,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DiscoveredGame {
     pub id: String,
     pub name: String,
@@ -141,6 +166,7 @@ pub struct AppSettings {
     pub sort_by: Option<String>,
     pub theme: Option<String>,
     pub card_scale: Option<f64>,
+    pub translucency: Option<f64>,
     pub library_order: Option<String>,
     pub show_titles: Option<bool>,
     pub show_store_labels: Option<bool>,
@@ -153,6 +179,12 @@ pub struct AppSettings {
     pub start_in_background: Option<bool>,
     /// Hide the main window while a game is running; show again when it exits.
     pub hide_on_game_launch: Option<bool>,
+    pub twitch_client_id: Option<String>,
+    pub twitch_client_secret: Option<String>,
+    pub show_tools: Option<bool>,
+    pub automatic_backups: Option<bool>,
+    pub library_layout: Option<String>,
+    pub saved_views: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

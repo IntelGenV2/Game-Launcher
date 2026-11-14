@@ -18,6 +18,7 @@ import {
   appearanceFromSettings,
 } from "../types";
 import { useEffect, useState } from "react";
+import { BackupControls } from "./BackupControls";
 
 interface Props {
   open: boolean;
@@ -25,7 +26,7 @@ interface Props {
   onClose: () => void;
   onSave: (settings: AppSettings) => Promise<void>;
   onPreviewAppearance: (prefs: AppearancePrefs) => void;
-  onResetArt: () => Promise<void>;
+  onResetArt: (custom: boolean) => Promise<void>;
   onResetStats: () => Promise<void>;
 }
 
@@ -62,7 +63,10 @@ export function SettingsModal({
 }: Props) {
   const [section, setSection] = useState<Section>("appearance");
   const [apiKey, setApiKey] = useState(settings.steamGridDbApiKey ?? "");
+  const [twitchClientId, setTwitchClientId] = useState(settings.twitchClientId ?? "");
+  const [twitchClientSecret, setTwitchClientSecret] = useState(settings.twitchClientSecret ?? "");
   const [theme, setTheme] = useState<ThemeId>("emerald");
+  const [translucency, setTranslucency] = useState(15);
   const [cardScale, setCardScale] = useState(1);
   const [showTitles, setShowTitles] = useState(true);
   const [showStoreLabels, setShowStoreLabels] = useState(true);
@@ -73,6 +77,8 @@ export function SettingsModal({
   const [startWithWindows, setStartWithWindows] = useState(false);
   const [closeToTray, setCloseToTray] = useState(false);
   const [hideOnGameLaunch, setHideOnGameLaunch] = useState(false);
+  const [showTools, setShowTools] = useState(false);
+  const [automaticBackups, setAutomaticBackups] = useState(true);
   const [saving, setSaving] = useState(false);
   const [appVersion, setAppVersion] = useState<string>("…");
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({ kind: "idle" });
@@ -84,6 +90,7 @@ export function SettingsModal({
     return {
       theme,
       cardScale,
+      translucency,
       showTitles,
       showStoreLabels,
       gridDensity,
@@ -96,8 +103,11 @@ export function SettingsModal({
   function loadFromSettings(s: AppSettings) {
     const a = appearanceFromSettings(s);
     setApiKey(s.steamGridDbApiKey ?? "");
+    setTwitchClientId(s.twitchClientId ?? "");
+    setTwitchClientSecret(s.twitchClientSecret ?? "");
     setTheme(a.theme);
     setCardScale(a.cardScale);
+    setTranslucency(a.translucency ?? 15);
     setShowTitles(a.showTitles !== false);
     setShowStoreLabels(a.showStoreLabels !== false);
     setGridDensity(a.gridDensity ?? "normal");
@@ -107,6 +117,8 @@ export function SettingsModal({
     setStartWithWindows(s.startWithWindows === true);
     setCloseToTray(s.closeToTray === true);
     setHideOnGameLaunch(s.hideOnGameLaunch === true);
+    setShowTools(s.showTools === true);
+    setAutomaticBackups(s.automaticBackups !== false);
     setSysMsg(null);
   }
 
@@ -191,6 +203,7 @@ export function SettingsModal({
   function preview(patch: Partial<AppearancePrefs>) {
     const next = { ...currentPrefs(), ...patch };
     if (patch.theme) setTheme(patch.theme);
+    if (patch.translucency != null) setTranslucency(patch.translucency);
     if (patch.cardScale != null) setCardScale(patch.cardScale);
     if (patch.showTitles != null) setShowTitles(patch.showTitles);
     if (patch.showStoreLabels != null) setShowStoreLabels(patch.showStoreLabels);
@@ -249,6 +262,12 @@ export function SettingsModal({
                       </button>
                     ))}
                   </div>
+                </div>
+                <div className="field field-scale-row">
+                  <label htmlFor="window-translucency">Translucency <span className="hint-inline">{translucency}%</span></label>
+                  <input id="window-translucency" type="range" min={0} max={70} step={5} value={translucency}
+                    onChange={event => preview({ translucency: Number(event.target.value) })} />
+                  <p className="hint">Let more of your desktop show through the launcher.</p>
                 </div>
                 <div className="field field-scale-row">
                   <label htmlFor="card-scale">
@@ -340,6 +359,9 @@ export function SettingsModal({
 
             {section === "library" && (
               <>
+                <BackupControls />
+                <label className="toggle-row"><input type="checkbox" checked={automaticBackups} onChange={event => setAutomaticBackups(event.target.checked)} />Daily local library backup</label>
+                <p className="hint">Keeps the latest seven daily backups while the launcher is open. Click Save to apply.</p>
                 <div className="field">
                   <label>Export</label>
                   <button
@@ -348,7 +370,7 @@ export function SettingsModal({
                     disabled={!!sysBusy}
                     onClick={async () => {
                       const dest = await save({
-                        defaultPath: "IntelLauncher-export.zip",
+                        defaultPath: "Studio 256 Game Launcher-export.zip",
                         filters: [{ name: "Zip", extensions: ["zip"] }],
                       });
                       if (!dest || typeof dest !== "string") return;
@@ -435,8 +457,80 @@ export function SettingsModal({
             {section === "covers" && (
               <>
                 <p className="settings-lead">
-                  Add a SteamGridDB key for better Epic/Xbox/EA matches.
+                  Artwork is found automatically when you scan your games. To change a cover,
+                  open the game and choose Edit → Cover art. Your custom artwork is kept when refreshing downloads.
                 </p>
+                <div className="field artwork-actions">
+                  <label>Cover art</label>
+                  <button
+                    type="button"
+                    className="btn"
+                    disabled={!!sysBusy}
+                    onClick={async () => {
+                      if (
+                        !window.confirm(
+                          "Refresh downloaded artwork? Custom covers will be kept.",
+                        )
+                      ) {
+                        return;
+                      }
+                      setSysBusy("reset-art");
+                      setSysMsg(null);
+                      try {
+                        await onResetArt(false);
+                        setSysMsg("Refreshing downloaded artwork. Custom covers kept.");
+                      } catch (e) {
+                        setSysMsg(String(e));
+                      } finally {
+                        setSysBusy(null);
+                      }
+                    }}
+                  >
+                    {sysBusy === "reset-art" ? "Refreshing…" : "Refresh downloaded artwork"}
+                  </button>
+                  <button type="button" className="btn btn-danger" disabled={!!sysBusy} onClick={async () => {
+                    if (!window.confirm("Delete your custom covers? Downloaded artwork stays. A recovery backup is saved first.")) return;
+                    setSysBusy("custom-art"); setSysMsg(null);
+                    try { await onResetArt(true); setSysMsg("Custom artwork removed. Recovery backup saved in the backup folder."); }
+                    catch (error) { setSysMsg(String(error)); }
+                    finally { setSysBusy(null); }
+                  }}>{sysBusy === "custom-art" ? "Removing…" : "Delete custom artwork"}</button>
+                </div>
+                {sysMsg && <p className="hint" role="status">{sysMsg}</p>}
+                <details className="advanced-providers"><summary>Advanced artwork providers</summary>
+                <p className="hint">Optional providers can fill gaps in your artwork. Basic artwork works without these credentials.</p>
+                <div className="field">
+                  <label htmlFor="twitch-id">Twitch Client ID (IGDB)</label>
+                  <input
+                    id="twitch-id"
+                    type="password"
+                    value={twitchClientId}
+                    onChange={(e) => setTwitchClientId(e.target.value)}
+                    placeholder="Optional"
+                    autoComplete="off"
+                  />
+                </div>
+                <div className="field">
+                  <label htmlFor="twitch-secret">Twitch Client Secret</label>
+                  <input
+                    id="twitch-secret"
+                    type="password"
+                    value={twitchClientSecret}
+                    onChange={(e) => setTwitchClientSecret(e.target.value)}
+                    placeholder="Optional"
+                    autoComplete="off"
+                  />
+                  <span className="hint">
+                    Free app at dev.twitch.tv/console/apps. Enable IGDB in the Twitch app settings.
+                  </span>
+                  <button
+                    type="button"
+                    className="linkish"
+                    onClick={() => void openUrl("https://dev.twitch.tv/console/apps")}
+                  >
+                    Open Twitch developer console
+                  </button>
+                </div>
                 <div className="field">
                   <label htmlFor="sgdb">SteamGridDB API key</label>
                   <input
@@ -447,8 +541,9 @@ export function SettingsModal({
                     placeholder="Optional"
                     autoComplete="off"
                   />
-                  <span className="hint">Free key at steamgriddb.com/profile/preferences/api</span>
+                  <span className="hint">Community grids when Steam/IGDB miss. steamgriddb.com/profile/preferences/api</span>
                 </div>
+                </details>
               </>
             )}
 
@@ -456,6 +551,7 @@ export function SettingsModal({
               <>
                 <p className="settings-lead">Startup and tray</p>
                 <div className="field toggle-stack">
+                  <label className="toggle-row"><input type="checkbox" checked={showTools} onChange={event => setShowTools(event.target.checked)} />Show System in navigation</label>
                   <label className="toggle-row">
                     <input
                       type="checkbox"
@@ -573,35 +669,6 @@ export function SettingsModal({
                   </button>
                 </div>
                 <div className="field">
-                  <label>Cover art</label>
-                  <button
-                    type="button"
-                    className="btn"
-                    disabled={!!sysBusy}
-                    onClick={async () => {
-                      if (
-                        !window.confirm(
-                          "Delete all downloaded and custom cover art, then fetch covers again?",
-                        )
-                      ) {
-                        return;
-                      }
-                      setSysBusy("reset-art");
-                      setSysMsg(null);
-                      try {
-                        await onResetArt();
-                        setSysMsg("Cover art reset. Fetching replacements…");
-                      } catch (e) {
-                        setSysMsg(String(e));
-                      } finally {
-                        setSysBusy(null);
-                      }
-                    }}
-                  >
-                    {sysBusy === "reset-art" ? "Resetting…" : "Reset all art"}
-                  </button>
-                </div>
-                <div className="field">
                   <label>Whole app</label>
                   <button
                     type="button"
@@ -648,8 +715,11 @@ export function SettingsModal({
                 await onSave({
                   ...settings,
                   steamGridDbApiKey: apiKey.trim() || null,
+                  twitchClientId: twitchClientId.trim() || null,
+                  twitchClientSecret: twitchClientSecret.trim() || null,
                   theme,
                   cardScale,
+                  translucency,
                   showTitles,
                   showStoreLabels,
                   gridDensity,
@@ -660,6 +730,8 @@ export function SettingsModal({
                   closeToTray,
                   startInBackground: false,
                   hideOnGameLaunch,
+                  showTools,
+                  automaticBackups,
                 });
                 onClose();
               } finally {

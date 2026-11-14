@@ -8,5 +8,5 @@ Created with the built-in image generation tool.
 
 All three are PNG raster assets with transparent backgrounds and near-black artwork intended for light backgrounds. The files share a modular emblem so both branches can use a related visual identity. Use the standalone emblem when the wordmark would be too small.
 
-These are independent image-generated renders, not vector masters. Transparency and image dimensions were checked. Final generation and edit prompts are saved in PROMPTS.md.
+These are independent image-generated renders, not vector masters. Transparency and image dimensions were checked.
 

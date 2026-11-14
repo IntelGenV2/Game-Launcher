@@ -3,6 +3,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { AddToGroupModal } from "./components/AddToGroupModal";
 import { BulkAddToGroupModal } from "./components/BulkAddToGroupModal";
 import { CoverPickModal } from "./components/CoverPickModal";
@@ -11,13 +12,18 @@ import { GameDetail } from "./components/GameDetail";
 import { GameGrid } from "./components/GameGrid";
 import { GroupAddModal } from "./components/GroupAddModal";
 import { GroupNameModal } from "./components/GroupNameModal";
+import { LibraryFilters } from "./components/LibraryFilters";
+import { Titlebar } from "./components/Titlebar";
+import { RandomPickModal } from "./components/RandomPickModal";
+import { filterLibrary } from "./library";
+import { gameBusy, type LaunchStatus } from "./types";
 import { CustomSelect } from "./components/CustomSelect";
 import { MergeModal } from "./components/MergeModal";
 import { SettingsModal } from "./components/SettingsModal";
 import { StatsPage } from "./components/StatsPage";
 import { SystemPage } from "./components/SystemPage";
 import { UpdateChecker } from "./components/UpdateChecker";
-import { isTypingTarget, useGamepad, type PadAction } from "./hooks/useGamepad";
+import { isTypingTarget } from "./hooks/useGamepad";
 import {
   AppSettings,
   AppearancePrefs,
@@ -39,9 +45,7 @@ import {
   localCoverUrl,
   asLibraryGame,
   MainView,
-  neverPlayed,
   parseLibraryOrder,
-  QUICK_FILTERS,
   reconcileLibraryOrder,
   SORT_OPTIONS,
   SortMode,
@@ -50,9 +54,9 @@ import {
 import "./styles/theme.css";
 import "./styles/App.css";
 
-const BigPicture = lazy(() =>
-  import("./components/BigPicture").then((m) => ({ default: m.BigPicture })),
-);
+const loadBigPicture = () =>
+  import("./components/BigPicture").then((m) => ({ default: m.BigPicture }));
+const BigPicture = lazy(loadBigPicture);
 
 const COVER_PICK_KEY = "intelgen.coverPickDismissed";
 
@@ -96,7 +100,11 @@ function filterCoverPickQueue(groups: CoverChoiceGroup[]): CoverChoiceGroup[] {
 }
 
 function App() {
-  const [games, setGames] = useState<Game[]>([]);
+  const [libraryGames, setGames] = useState<Game[]>([]);
+  const [launchStates, setLaunchStates] = useState<Record<string, LaunchStatus>>({});
+  const games = useMemo<Game[]>(() => libraryGames.map(game => ({ ...game, launchStatus: launchStates[game.id] })), [libraryGames, launchStates]);
+  const [storeFilter, setStoreFilter] = useState<LibraryFilter>("all");
+  const [randomOpen, setRandomOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [scanning, setScanning] = useState(false);
   const [query, setQuery] = useState("");
@@ -125,6 +133,8 @@ function App() {
     closeToTray: false,
     startInBackground: false,
     hideOnGameLaunch: false,
+    twitchClientId: null,
+    twitchClientSecret: null,
   });
   const [stats, setStats] = useState<LibraryStats>({
     total: 0,
@@ -161,7 +171,7 @@ function App() {
   const flyTimer = useRef<number>(0);
   const libraryScrollRef = useRef(0);
   const [bigPicture, setBigPicture] = useState(false);
-  const sessionStarts = useRef<Record<string, number>>({});
+  const [enteringBp, setEnteringBp] = useState(false);
   const toastTimer = useRef<number | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const addMenuRef = useRef<HTMLDivElement>(null);
@@ -383,27 +393,7 @@ function App() {
   );
 
   const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    let list = games.filter((g) => {
-      if (libraryFilter === "hidden") return g.hidden;
-      if (g.hidden) return false;
-      if (libraryFilter === "favorites" && !g.favorite) return false;
-      if (libraryFilter === "never" && !neverPlayed(g)) return false;
-      if (libraryFilter === "missing" && !g.missing) return false;
-      if (libraryFilter === "other") {
-        if (g.store !== "manual" && g.store !== "roblox") return false;
-      } else if (
-        libraryFilter !== "all" &&
-        libraryFilter !== "favorites" &&
-        libraryFilter !== "never" &&
-        libraryFilter !== "missing" &&
-        g.store !== libraryFilter
-      ) {
-        return false;
-      }
-      if (q && !g.name.toLowerCase().includes(q)) return false;
-      return true;
-    });
+    let list = filterLibrary(games, query, libraryFilter, storeFilter, false);
 
     list = [...list].sort((a, b) => {
       if (sortBy === "custom") {
@@ -414,7 +404,7 @@ function App() {
         return av - bv || a.name.localeCompare(b.name);
       }
       if (sortBy === "favorites") {
-        if (a.favorite !== b.favorite) return a.favorite ? -1 : 1;
+        if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
         return a.name.localeCompare(b.name);
       }
       if (sortBy === "missing") {
@@ -438,7 +428,12 @@ function App() {
       return a.name.localeCompare(b.name);
     });
     return list;
-  }, [games, query, libraryFilter, sortBy, libraryOrder]);
+  }, [games, query, libraryFilter, storeFilter, sortBy, libraryOrder]);
+
+  const displayedOrder = useMemo(
+    () => sortBy === "custom" ? libraryOrder : buildDefaultLibraryOrder(filtered, groups),
+    [sortBy, libraryOrder, filtered, groups],
+  );
 
   // Keep library order in sync when games/groups change
   useEffect(() => {
@@ -642,62 +637,55 @@ function App() {
     };
   }, [addManualFromPath, showToast]);
 
-  async function handleLaunch(game: Game) {
-    if (game.missing) {
-      showToast("This game looks missing from disk", true);
-      return;
-    }
+  async function handleLaunch(game: Game, sourceId?: string) {
+    if (gameBusy(game)) return;
+    if (game.missing) { openGame(game); return; }
+    setLaunchStates(prev => ({ ...prev, [game.id]: { gameId: game.id, sourceId: sourceId ?? game.id, state: "launching" } }));
     try {
-      const prev = sessionStarts.current[game.id];
-      if (prev) {
-        const minutes = Math.min(12 * 60, Math.max(0, Math.round((Date.now() - prev) / 60000)));
-        await invoke("end_play_session", { id: game.id, minutes });
-      }
-      sessionStarts.current[game.id] = Date.now();
-      const updated = await invoke<Game>("launch_game", { id: game.id });
-      setGames((prev) =>
-        prev.map((g) =>
-          g.id === updated.id
-            ? asLibraryGame({ ...updated, playtimeMinutes: g.playtimeMinutes })
-            : g,
-        ),
-      );
-      showToast(`Launching ${game.name}`);
+      await invoke<Game>("launch_game", { id: game.id, sourceId: sourceId ?? null });
     } catch (e) {
+      setLaunchStates(prev => ({ ...prev, [game.id]: { gameId: game.id, sourceId: sourceId ?? game.id, state: "failed", message: String(e) } }));
       showToast(String(e), true);
     }
   }
 
   useEffect(() => {
-    const onFocus = async () => {
-      for (const [id, started] of Object.entries(sessionStarts.current)) {
-        const minutes = Math.min(12 * 60, Math.round((Date.now() - started) / 60000));
-        if (minutes >= 1) {
-          try {
-            const updated = await invoke<Game>("end_play_session", {
-              id,
-              minutes,
-            });
-            setGames((prev) => prev.map((g) => (g.id === updated.id ? asLibraryGame(updated) : g)));
-            delete sessionStarts.current[id];
-          } catch {
-            /* ignore */
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+    const received = new Set<string>();
+    void (async () => {
+      try {
+        const { listen } = await import("@tauri-apps/api/event");
+        const stop = await listen<LaunchStatus>("launch-status", event => {
+          if (cancelled) return;
+          const status = event.payload;
+          received.add(status.gameId);
+          setLaunchStates(prev => ({ ...prev, [status.gameId]: status }));
+          if (status.state === "failed") showToast(status.message ?? "Could not launch the game", true);
+          if (status.state === "finished") showToast("Session finished — playtime saved");
+          if (status.state === "running" || status.state === "finished") {
+            void invoke<Game>("get_game", { id: status.gameId }).then(updated => {
+              if (!cancelled) setGames(prev => prev.map(game => game.id === updated.id ? asLibraryGame(updated) : game));
+            }).catch(() => undefined);
+            void refreshStats();
+            setOverview(null);
           }
-        }
-      }
-    };
-    window.addEventListener("focus", onFocus);
-    return () => window.removeEventListener("focus", onFocus);
-  }, []);
+        });
+        if (cancelled) { stop(); return; }
+        unlisten = stop;
+        const snapshot = await invoke<LaunchStatus[]>("launch_statuses");
+        if (!cancelled) setLaunchStates(prev => ({ ...Object.fromEntries(snapshot.filter(status => !received.has(status.gameId)).map(status => [status.gameId, status])), ...prev }));
+      } catch { /* Browser preview has no native session service. */ }
+    })();
+    return () => { cancelled = true; unlisten?.(); };
+  }, [showToast, refreshStats]);
 
-  async function handleToggleFavorite(game: Game) {
+  async function handleTogglePin(game: Game) {
     try {
-      const updated = await invoke<Game>("toggle_favorite", { id: game.id });
-      setGames((prev) => prev.map((g) => (g.id === updated.id ? asLibraryGame(updated) : g)));
-      await refreshStats();
-    } catch (e) {
-      showToast(String(e), true);
-    }
+      const updated = await invoke<Game>("set_pinned", { id: game.id, pinned: !game.pinned });
+      setGames(prev => prev.map(item => item.id === updated.id ? asLibraryGame(updated) : item));
+      showToast(updated.pinned ? "Pinned above your games" : "Game unpinned");
+    } catch (error) { showToast(String(error), true); }
   }
 
   async function handleHide(game: Game) {
@@ -790,7 +778,7 @@ function App() {
     captureLibraryScroll();
     const reduce = document.body.classList.contains("reduce-motion");
     const tile = document.querySelector(
-      `[data-focus-key="game:${game.id.replace(/"/g, '\\"')}"] .cover`,
+      `[data-focus-key="game:${CSS.escape(game.id)}"] .cover, [data-focus-key="member:${CSS.escape(game.id)}"] .cover`,
     ) as HTMLElement | null;
     const from = tile?.getBoundingClientRect();
     window.clearTimeout(flyTimer.current);
@@ -803,7 +791,7 @@ function App() {
         game,
       });
       setFlyDone(false);
-      flyTimer.current = window.setTimeout(() => setFlyDone(true), 600);
+      flyTimer.current = window.setTimeout(() => { setFly(null); setFlyDone(true); }, 1200);
     } else {
       setFly(null);
       setFlyDone(true);
@@ -813,32 +801,51 @@ function App() {
     setNavActive(false);
   }
 
+  const randomPool = filtered.filter(game => !game.missing && !gameBusy(game));
   function handleRandomLaunch() {
-    const pool = filtered.filter((g) => !g.missing);
-    if (pool.length === 0) {
-      showToast("No launchable games in this view", true);
-      return;
-    }
-    const pick = pool[Math.floor(Math.random() * pool.length)];
-    void handleLaunch(pick);
+    if (!randomPool.length) { showToast("No available games in this view", true); return; }
+    setRandomOpen(true);
   }
+
+  async function saveViewSettings(changes: Partial<AppSettings>) {
+    const next = { ...settings, ...changes };
+    await invoke("save_settings", { settings: next });
+    setSettings(next);
+  }
+
+  const layout = settings.libraryLayout === "list" ? "list" : "grid";
 
   async function toggleBigPicture() {
     const win = getCurrentWindow();
-    const next = !bigPicture;
-    setBigPicture(next);
-    if (next) {
-      setSettingsOpen(false);
-      setSystemOpen(false);
-      setMainView("library");
-      setSelectedId(null);
-      setNavActive(false);
+    if (!bigPicture) {
+      flushSync(() => {
+        setSettingsOpen(false);
+        setSystemOpen(false);
+        setMainView("library");
+        setSelectedId(null);
+        setNavActive(false);
+        setEnteringBp(true);
+      });
+      await loadBigPicture();
+      flushSync(() => setBigPicture(true));
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+      });
+      try {
+        await win.setFullscreen(true);
+      } catch {
+        /* ignore */
+      }
+      return;
     }
+    flushSync(() => setEnteringBp(true));
     try {
-      await win.setFullscreen(next);
+      await win.setFullscreen(false);
     } catch {
       /* ignore */
     }
+    setBigPicture(false);
+    setEnteringBp(false);
   }
 
   async function loadOverview() {
@@ -967,7 +974,7 @@ function App() {
   }, [settings, sortBy, libraryOrder]);
 
   const modalOpen =
-    settingsOpen ||
+    randomOpen || systemOpen || settingsOpen ||
     addToGroupTarget != null ||
     addGameToGroupTarget != null ||
     groupNameModal != null ||
@@ -979,7 +986,7 @@ function App() {
     (dx: number, dy: number) => {
       const keys = focusablesRef.current;
       if (keys.length === 0) return;
-      const colsGuess = Math.max(
+      const colsGuess = document.querySelector('.games-section .library-list') ? 1 : Math.max(
         1,
         Math.floor(
           ((document.querySelector(".game-grid") as HTMLElement | null)?.clientWidth ?? 600) /
@@ -1020,8 +1027,8 @@ function App() {
       setExpandedGroupId((cur) => (cur === id ? null : id));
       return;
     }
-    if (key.startsWith("game:")) {
-      const id = key.slice(5);
+    if ((key.startsWith("game:") || key.startsWith("member:"))) {
+      const id = key.slice(key.indexOf(":") + 1);
       const game = games.find((g) => g.id === id);
       if (!game) return;
       if (selectMode) {
@@ -1052,13 +1059,13 @@ function App() {
     setAddMenuOpen(false);
   }, []);
 
-  const handleBulkFavorite = useCallback(async () => {
+  const handleBulkPin = useCallback(async () => {
     const ids = [...selectedIds];
     for (const id of ids) {
       const g = games.find((x) => x.id === id);
-      if (g && !g.favorite) await handleToggleFavorite(g);
+      if (g && !g.pinned) await handleTogglePin(g);
     }
-    showToast(`Favorited ${ids.length}`);
+    showToast(`Pinned ${ids.length}`);
     exitSelectMode();
   }, [selectedIds, games, exitSelectMode, showToast]);
 
@@ -1105,77 +1112,13 @@ function App() {
     ],
   );
 
-  const handlePadAction = useCallback(
-    (action: PadAction) => {
-      if (bigPicture) return;
-      if (modalOpen) {
-        if (action === "back") {
-          setSettingsOpen(false);
-          setAddToGroupTarget(null);
-          setAddGameToGroupTarget(null);
-          setGroupNameModal(null);
-          setBulkAddOpen(false);
-        }
-        return;
-      }
-      if (selectedGame) {
-        if (action === "back") setSelectedId(null);
-        else if (action === "confirm") void handleLaunch(selectedGame);
-        else if (action === "favorite") void handleToggleFavorite(selectedGame);
-        return;
-      }
-      if (
-        action === "up" ||
-        action === "down" ||
-        action === "left" ||
-        action === "right" ||
-        action === "confirm"
-      ) {
-        setNavActive(true);
-      }
-      if (action === "up") moveFocus(0, -1);
-      else if (action === "down") moveFocus(0, 1);
-      else if (action === "left") moveFocus(-1, 0);
-      else if (action === "right") moveFocus(1, 0);
-      else if (action === "confirm") activateFocus();
-      else if (action === "back") {
-        if (addMenuOpen) setAddMenuOpen(false);
-        else if (navActiveRef.current) {
-          setNavActive(false);
-          setFocusKey(null);
-        } else if (selectMode) exitSelectMode();
-        else if (expandedGroupId) setExpandedGroupId(null);
-        else if (query) setQuery("");
-      } else if (action === "favorite") {
-        const key = focusKeyRef.current;
-        if (key?.startsWith("game:")) {
-          const g = games.find((x) => x.id === key.slice(5));
-          if (g) void handleToggleFavorite(g);
-        }
-      } else if (action === "select") toggleSelectMode();
-    },
-    [
-      modalOpen,
-      selectedGame,
-      moveFocus,
-      activateFocus,
-      addMenuOpen,
-      selectMode,
-      exitSelectMode,
-      expandedGroupId,
-      query,
-      games,
-      toggleSelectMode,
-      bigPicture,
-    ],
-  );
-
-  const gamepadConnected = useGamepad(handlePadAction, !loading && !bigPicture);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (modalOpen) {
         if (e.key === "Escape") {
+          setRandomOpen(false);
+          setSystemOpen(false);
           setSettingsOpen(false);
           setAddToGroupTarget(null);
           setAddGameToGroupTarget(null);
@@ -1231,6 +1174,8 @@ function App() {
         if (!selectedGame) searchRef.current?.focus();
         return;
       }
+
+      if ((e.target as HTMLElement).closest("button, select, summary, [role=dialog]")) return;
 
       if (selectedGame) {
         if (e.key === "Enter") {
@@ -1320,7 +1265,7 @@ function App() {
     return () => document.removeEventListener("mousedown", onDoc);
   }, [storeFlyout]);
 
-  const storeFilterActive = STORE_FILTER_OPTIONS.some((o) => o.id === libraryFilter);
+  const storeFilterActive = storeFilter !== "all";
   const emptyCopy = (() => {
     if (!loading && games.length === 0) {
       return {
@@ -1332,7 +1277,7 @@ function App() {
       return { title: "No matches", body: `Nothing named "${query.trim()}" in this view.` };
     }
     if (libraryFilter === "favorites") {
-      return { title: "No favorites yet", body: "Star a game on its tile to pin it here." };
+      return { title: "No pinned games yet", body: "Pin a game to keep it above your games list." };
     }
     if (libraryFilter === "never") {
       return { title: "All caught up", body: "Every game in this view has been played at least once." };
@@ -1350,68 +1295,9 @@ function App() {
   })();
 
   return (
-    <div
-      className={`app-shell${gamepadConnected ? " gamepad-connected" : ""}${bigPicture ? " big-picture" : ""}`}
-    >
-      <aside className="sidebar" aria-label="Main">
-        <div className="brand sidebar-brand">
-          <img src="/intelgen-icon.png" alt="" className="brand-mark" />
-          <h1 className="brand-name">IntelGen</h1>
-        </div>
-        <nav className="sidebar-nav">
-          <button
-            type="button"
-            className={`sidebar-btn${mainView === "library" && !selectedGame ? " active" : ""}`}
-            onClick={() => {
-              setMainView("library");
-              setSelectedId(null);
-            }}
-          >
-            <span className="sidebar-btn-label">Library</span>
-            {!loading && <span className="sidebar-btn-meta">{stats.total}</span>}
-          </button>
-          <button
-            type="button"
-            className={`sidebar-btn${mainView === "stats" ? " active" : ""}`}
-            onClick={() => {
-              captureLibraryScroll();
-              setSelectedId(null);
-              setMainView("stats");
-            }}
-          >
-            <span className="sidebar-btn-label">Stats</span>
-            {!loading && (
-              <span className="sidebar-btn-meta">
-                {stats.totalPlaytimeMinutes > 0
-                  ? formatPlaytime(stats.totalPlaytimeMinutes)
-                  : "0h"}
-              </span>
-            )}
-          </button>
-        </nav>
-        <div className="sidebar-foot">
-          <button
-            type="button"
-            className={`sidebar-btn${systemOpen ? " active" : ""}`}
-            onClick={() => setSystemOpen(true)}
-          >
-            System
-          </button>
-          <button
-            type="button"
-            className={`sidebar-btn${bigPicture ? " active" : ""}`}
-            onClick={() => void toggleBigPicture()}
-          >
-            Big Picture
-          </button>
-          <button type="button" className="sidebar-btn" onClick={() => setSettingsOpen(true)}>
-            Settings
-          </button>
-        </div>
-      </aside>
-
-      <div className="app-col">
-        <header className="topbar">
+    <div className={`app-window${bigPicture ? " bp-open" : ""}`}>
+      <Titlebar onError={showToast}>
+        <div className="topbar">
           {mainView === "library" && !selectedGame && (
             <div className="topbar-tools">
               <div className="search-wrap">
@@ -1431,37 +1317,30 @@ function App() {
                   aria-label="Search games"
                 />
               </div>
-              <div className="filter-chips" role="tablist" aria-label="Quick filters">
-                {QUICK_FILTERS.map((f) => (
-                  <button
-                    key={f.id}
-                    type="button"
-                    className={`chip-btn${libraryFilter === f.id ? " active" : ""}`}
-                    onClick={() => setLibraryFilter(f.id)}
-                  >
-                    {f.label}
-                  </button>
-                ))}
+              <LibraryFilters value={libraryFilter} onChange={setLibraryFilter} />
+              <div className="filter-chips">
                 <div className="store-flyout">
                   <button
                     type="button"
                     className={`chip-btn${storeFlyout || storeFilterActive ? " active" : ""}`}
+                    aria-haspopup="menu"
+                    aria-expanded={storeFlyout}
                     onClick={() => setStoreFlyout((v) => !v)}
                   >
                     {storeFilterActive
-                      ? (STORE_FILTER_OPTIONS.find((s) => s.id === libraryFilter)?.label ?? "Stores")
-                      : "Stores"}
+                      ? (STORE_FILTER_OPTIONS.find((s) => s.id === storeFilter)?.label ?? "Stores")
+                      : "Stores"} <span className="custom-select-caret" aria-hidden>▾</span>
                   </button>
                   {storeFlyout && (
                     <div className="icon-menu-panel store-menu" role="menu">
-                      {STORE_FILTER_OPTIONS.map((s) => (
+                      {[{ id: "all" as LibraryFilter, label: "All stores" }, ...STORE_FILTER_OPTIONS].map((s) => (
                         <button
                           key={s.id}
                           type="button"
                           role="menuitem"
-                          className={libraryFilter === s.id ? "active" : ""}
+                          className={storeFilter === s.id ? "active" : ""}
                           onClick={() => {
-                            setLibraryFilter(s.id);
+                            setStoreFilter(s.id);
                             setStoreFlyout(false);
                           }}
                         >
@@ -1477,6 +1356,7 @@ function App() {
                 options={SORT_OPTIONS}
                 onChange={persistSort}
                 ariaLabel="Sort games"
+                triggerLabel="Sort"
               />
             </div>
           )}
@@ -1572,8 +1452,71 @@ function App() {
               </svg>
             </button>
           </div>
-        </header>
+        </div>
+      </Titlebar>
+    <div
+      className={`app-shell${bigPicture ? " big-picture" : ""}`}
+    >
+      <aside className="sidebar" aria-label="Main">
+        <nav className="sidebar-nav">
+          <button
+            type="button"
+            className={`sidebar-btn${mainView === "library" && !selectedGame ? " active" : ""}`}
+            onClick={() => {
+              setMainView("library");
+              setSelectedId(null);
+            }}
+          >
+            <span className="sidebar-btn-label">Library</span>
+            {!loading && <span className="sidebar-btn-meta">{stats.total}</span>}
+          </button>
+          <button
+            type="button"
+            className={`sidebar-btn${mainView === "stats" ? " active" : ""}`}
+            onClick={() => {
+              captureLibraryScroll();
+              setSelectedId(null);
+              setMainView("stats");
+            }}
+          >
+            <span className="sidebar-btn-label">Stats</span>
+            {!loading && (
+              <span className="sidebar-btn-meta">
+                {stats.totalPlaytimeMinutes > 0
+                  ? formatPlaytime(stats.totalPlaytimeMinutes)
+                  : "0h"}
+              </span>
+            )}
+          </button>
+        </nav>
+        <div className="sidebar-foot">
+          {settings.showTools && <button
+            type="button"
+            className={`sidebar-btn${systemOpen ? " active" : ""}`}
+            onClick={() => setSystemOpen(true)}
+          >
+            System
+          </button>}
+          <button
+            type="button"
+            className={`sidebar-btn${bigPicture ? " active" : ""}`}
+            onPointerEnter={() => void loadBigPicture()}
+            onClick={() => void toggleBigPicture()}
+          >
+            Big Picture
+          </button>
+          <button type="button" className="sidebar-btn" onClick={() => setSettingsOpen(true)}>
+            Settings
+          </button>
+        </div>
+      </aside>
 
+      <div className="app-col">
+        {mainView === "library" && !selectedGame && <div className="library-viewbar">
+          <span className="library-count">{filtered.length} games</span>
+          {(query || libraryFilter !== "all" || storeFilter !== "all") && <button className="btn btn-subtle" onClick={() => { setQuery(""); setLibraryFilter("all"); setStoreFilter("all"); }}>Clear filters</button>}
+          <div className="view-toggle" aria-label="Library layout">{(["grid", "list"] as const).map(mode => <button key={mode} className={`chip-btn${layout === mode ? " active" : ""}`} aria-pressed={layout === mode} onClick={() => void saveViewSettings({ libraryLayout: mode }).catch(error => showToast(String(error), true))}>{mode === "grid" ? "Grid" : "List"}</button>)}</div>
+        </div>}
         <main className="main">
           <div
             className="library-home"
@@ -1605,17 +1548,16 @@ function App() {
                 </div>
               ) : (
                 <GameGrid
+                  pinnedOnly={libraryFilter === "favorites"}
+                  layout={layout}
+                  onTogglePin={handleTogglePin}
                   games={filtered}
                   groups={groups}
                   coverMap={coverMap}
                   emptyTitle={emptyCopy.title}
                   emptyBody={emptyCopy.body}
                   active={!selectedGame && mainView === "library"}
-                  libraryOrder={
-                    sortBy === "custom"
-                      ? libraryOrder
-                      : buildDefaultLibraryOrder(filtered, groups)
-                  }
+                  libraryOrder={displayedOrder}
                   expandedGroupId={expandedGroupId}
                   onExpandedGroupChange={(id) => {
                     setNavActive(false);
@@ -1637,7 +1579,7 @@ function App() {
                   onOpen={openGame}
                   onLaunch={handleLaunch}
                   onOpenSaveFolder={handleOpenSaveFolder}
-                  onToggleFavorite={handleToggleFavorite}
+
                   onHide={handleHide}
                   onOpenFolder={handleOpenFolder}
                   onAddGame={handleAddManual}
@@ -1654,6 +1596,8 @@ function App() {
           </div>
           {selectedGame ? (
             <GameDetail
+              onTogglePin={handleTogglePin}
+              onRescan={() => void handleRescan()}
               game={selectedGame}
               coverDataUrl={coverMap[selectedGame.id]}
               coverHidden={!flyDone}
@@ -1664,7 +1608,7 @@ function App() {
               }}
               onLaunch={handleLaunch}
               onOpenSaveFolder={handleOpenSaveFolder}
-              onToggleFavorite={handleToggleFavorite}
+
               onRemove={handleRemove}
               onGameUpdated={(g) =>
                 setGames((prev) =>
@@ -1695,9 +1639,9 @@ function App() {
             type="button"
             className="btn"
             disabled={selectedIds.size === 0}
-            onClick={() => void handleBulkFavorite()}
+            onClick={() => void handleBulkPin()}
           >
-            Favorite
+            Pin games
           </button>
           <button
             type="button"
@@ -1721,15 +1665,6 @@ function App() {
         </div>
       )}
 
-      {gamepadConnected && !selectedGame && !modalOpen && !bigPicture && (
-        <div className="gamepad-hint" aria-hidden>
-          <span>D-pad move</span>
-          <span>A open</span>
-          <span>B back</span>
-          <span>X favorite</span>
-          <span>View select</span>
-        </div>
-      )}
 
       {fly && !flyDone && (
         <FlyCover
@@ -1769,7 +1704,8 @@ function App() {
           });
           exitSelectMode();
           await refreshStats();
-          showToast(`Merged into ${kept.name}`);
+          await refreshGroups();
+          showToast(`Linked copies of ${kept.name}`);
         }}
       />
 
@@ -1838,16 +1774,19 @@ function App() {
 
       <SystemPage open={systemOpen} onClose={() => setSystemOpen(false)} />
 
+      {enteringBp && !bigPicture && <div className="bp-enter-veil" aria-hidden />}
       {bigPicture && (
-        <Suspense fallback={null}>
+        <Suspense fallback={<div className="bp-enter-veil" aria-hidden />}>
           <BigPicture
             games={games.filter((g) => !g.hidden)}
             groups={groups}
             coverMap={coverMap}
             libraryOrder={libraryOrder}
+            showTools={settings.showTools === true}
+            onTogglePin={handleTogglePin}
             reduceMotion={settings.reduceMotion === true}
             onLaunch={handleLaunch}
-            onToggleFavorite={handleToggleFavorite}
+
             onOpenFolder={handleOpenFolder}
             onOpenSaveFolder={handleOpenSaveFolder}
             onExit={() => void toggleBigPicture()}
@@ -1871,18 +1810,17 @@ function App() {
         onPreviewAppearance={(prefs: AppearancePrefs) => {
           applyAppearance(prefs);
         }}
-        onResetArt={async () => {
-          await invoke("reset_all_art");
+        onResetArt={async (custom: boolean) => {
+          await invoke("reset_art", { custom });
           setCoverMap({});
           setSelectedId(null);
           const list = await invoke<Game[]>("list_games");
           setGames(list.map(asLibraryGame));
           invoke("fetch_covers", { ids: null }).catch(() => undefined);
-          showToast("Cover art reset — fetching new art");
+          showToast(custom ? "Custom artwork removed" : "Refreshing downloaded artwork…");
         }}
         onResetStats={async () => {
           await invoke("reset_all_stats");
-          sessionStarts.current = {};
           const list = await invoke<Game[]>("list_games");
           setGames(list.map(asLibraryGame));
           await refreshStats();
@@ -1891,6 +1829,8 @@ function App() {
           showToast("Stats reset");
         }}
       />
+
+      {randomOpen && randomPool.length > 0 && <RandomPickModal games={randomPool} coverMap={coverMap} onClose={() => setRandomOpen(false)} onPlay={game => { setRandomOpen(false); void handleLaunch(game); }} />}
 
       <UpdateChecker />
 
@@ -1911,6 +1851,7 @@ function App() {
           )}
         </div>
       )}
+    </div>
     </div>
   );
 }
