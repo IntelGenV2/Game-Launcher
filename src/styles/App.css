@@ -45,7 +45,11 @@
   white-space: nowrap;
   padding-right: 0.22em;
   overflow: visible;
-  background: linear-gradient(120deg, #ffffff 12%, #ffe7c2 40%, #ffb347 62%, #ff8c28 100%);
+}
+
+.brand-name,
+.bp-hud-name {
+  background-image: linear-gradient(120deg, #fff 12%, color-mix(in srgb, white 60%, var(--accent-hot)) 40%, var(--accent-hot) 62%, var(--accent) 100%);
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;

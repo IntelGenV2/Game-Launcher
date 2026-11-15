@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.12
+
+- The startup cartridge now has twelve color stripes, keyed gold contacts, and clips that close as it docks. The circuit traces keep pulsing in your selected theme through the Studio 256 title.
+- The Studio 256 name fades from white to your theme color in the desktop title bar and Big Picture.
+- The Windows installer refreshes the striped cartridge icon in Installed Apps, Start menu and desktop shortcuts, and existing taskbar pins, including renamed pins.
+
 ## 0.3.11
 
 - An animated 3D Studio 256 title appears as the cartridge docks. Color pulses keep moving along the circuit traces while the title is visible and as the library fades in.

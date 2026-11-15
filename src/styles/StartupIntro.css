@@ -48,10 +48,10 @@
 .startup-word-edge { fill: color-mix(in srgb, var(--accent) 47%, var(--bg-deep)); }
 
 .is-playing .startup-word {
-  animation: startup-type-in 440ms cubic-bezier(.16,.85,.24,1) 1320ms both;
+  animation: startup-type-in 440ms cubic-bezier(.16,.85,.24,1) 1120ms both;
 }
 
-.is-playing .startup-word-number { animation-delay: 1500ms; }
+.is-playing .startup-word-number { animation-delay: 1300ms; }
 
 @keyframes startup-type-in {
   from { opacity: 0; transform: translateY(8px) scaleY(.65); }

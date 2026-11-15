@@ -40,7 +40,7 @@ Var Studio256FinishDesktopLink
   ${EndIf}
 !macroend
 
-!define STUDIO256_SHORTCUT_ICON "studio-256-cartridge-v2.ico"
+!define STUDIO256_SHORTCUT_ICON "studio-256-cartridge-v3.ico"
 
 ; Edit the loaded link so taskbar pins retain their arguments and AppUserModelID.
 Function Studio256RefreshLink
@@ -81,6 +81,35 @@ Function Studio256RefreshFolder
   done:
 FunctionEnd
 
+; Windows groups Start menu links and implicit taskbar pins in subdirectories.
+; Stay within the shell folder, including when a user has placed junctions there.
+Function Studio256RefreshTree
+  Exch $R3
+  Push $R4
+  Push $R5
+  Push "$R3"
+  Call Studio256RefreshFolder
+  FindFirst $R4 $R5 "$R3\*"
+  StrCmp $R5 "" done
+  ${DoWhile} $R5 != ""
+    ${If} $R5 != "."
+    ${AndIf} $R5 != ".."
+      System::Call 'kernel32::GetFileAttributesW(w "$R3\$R5")i.r2'
+      IntOp $2 $2 & 0x410 ; FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT
+      ${If} $2 = 0x10
+        Push "$R3\$R5"
+        Call Studio256RefreshTree
+      ${EndIf}
+    ${EndIf}
+    FindNext $R4 $R5
+  ${Loop}
+  FindClose $R4
+  done:
+  Pop $R5
+  Pop $R4
+  Pop $R3
+FunctionEnd
+
 ; Tauri's Finish button can create or replace the desktop shortcut after POSTINSTALL.
 Function .onGUIEnd
   ${If} $Studio256FinishDesktopLink != ""
@@ -98,18 +127,31 @@ FunctionEnd
     DeleteRegKey /ifempty SHCTX "${LEGACY_APP_KEY}"
   ${EndIf}
   StrCpy $Studio256ShortcutTarget "$INSTDIR\${MAINBINARYNAME}.exe"
+  ; Custom shortcuts outside the shell folders can still reference earlier icon paths.
+  System::Call 'kernel32::CopyFileW(w "$INSTDIR\${STUDIO256_SHORTCUT_ICON}", w "$INSTDIR\studio-256-cartridge.ico", i 0)'
+  System::Call 'kernel32::CopyFileW(w "$INSTDIR\${STUDIO256_SHORTCUT_ICON}", w "$INSTDIR\studio-256-cartridge-v2.ico", i 0)'
+  System::Call 'shell32::SHChangeNotify(i 0x2000, i 0x2005, w "$INSTDIR\studio-256-cartridge.ico", p 0)'
+  System::Call 'shell32::SHChangeNotify(i 0x2000, i 0x2005, w "$INSTDIR\studio-256-cartridge-v2.ico", p 0)'
+  WriteRegStr SHCTX "${UNINSTKEY}" "DisplayIcon" '$\"$INSTDIR\${STUDIO256_SHORTCUT_ICON}$\",0'
+  System::Call 'shell32::SHChangeNotify(i 0x2000, i 0x2005, w "$Studio256ShortcutTarget", p 0)'
+  System::Call 'shell32::SHChangeNotify(i 0x2000, i 0x2005, w "$INSTDIR\uninstall.exe", p 0)'
   Push "$SMPROGRAMS"
-  Call Studio256RefreshFolder
-  !if "${STARTMENUFOLDER}" != ""
-    Push "$SMPROGRAMS\$AppStartMenuFolder"
-    Call Studio256RefreshFolder
-  !endif
+  Call Studio256RefreshTree
   Push "$DESKTOP"
+  Call Studio256RefreshFolder
+  Push "$APPDATA\Microsoft\Internet Explorer\Quick Launch"
   Call Studio256RefreshFolder
   Push "$APPDATA\Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar"
   Call Studio256RefreshFolder
+  Push "$APPDATA\Microsoft\Internet Explorer\Quick Launch\User Pinned\ImplicitAppShortcuts"
+  Call Studio256RefreshTree
   ${IfNot} ${Silent}
   ${AndIf} $PassiveMode != 1
     StrCpy $Studio256FinishDesktopLink "$DESKTOP\${PRODUCTNAME}.lnk"
   ${EndIf}
+!macroend
+
+!macro NSIS_HOOK_PREUNINSTALL
+  Delete "$INSTDIR\studio-256-cartridge.ico"
+  Delete "$INSTDIR\studio-256-cartridge-v2.ico"
 !macroend

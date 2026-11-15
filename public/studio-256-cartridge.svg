@@ -1,16 +1,25 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
   <title>Studio 256 cartridge</title>
-  <g fill="#ebc66f">
-    <rect x="51" y="181" width="17" height="44" rx="4"/>
-    <rect x="97" y="181" width="17" height="44" rx="4"/>
-    <rect x="143" y="181" width="17" height="44" rx="4"/>
-    <rect x="189" y="181" width="17" height="44" rx="4"/>
-  </g>
+  <defs>
+    <path id="ribbon" d="M0 119l13.5-17v22L0 141zm0 28h13.5v6H0z"/>
+  </defs>
+  <path fill="#dbad60" d="M45 181h11v42H45zm19 0h11v42H64zm19 0h11v42H83zm19 0h11v42h-11zm19 0h11v42h-11zm36 0h11v42h-11zm19 0h11v42h-11zm19 0h11v42h-11z"/>
   <path fill="#828486" d="M34 60V51q0-20 21-20h146q21 0 21 20v9z"/>
   <path fill="#46484b" d="M39 46h178q26 0 26 26v105q0 21-15 26-8 3-22 3H50q-14 0-22-3-15-5-15-26V72q0-26 26-26z"/>
-  <rect x="33" y="73" width="190" height="99" rx="14" fill="#ae683c"/>
+  <rect x="33" y="73" width="190" height="99" rx="14" fill="#687985"/>
   <rect x="40" y="80" width="176" height="85" rx="9" fill="#14181c"/>
-  <path fill="#f4d064" d="M59 99q0-6 5-3l32 23q4 3 0 6l-32 23q-5 3-5-3z"/>
-  <rect x="116" y="104" width="73" height="11" rx="4" fill="#c5c8ca"/>
-  <rect x="116" y="131" width="56" height="11" rx="4" fill="#d98777"/>
+  <g>
+    <use href="#ribbon" x="48" fill="#474ac1"/>
+    <use href="#ribbon" x="61.5" fill="#8288eb"/>
+    <use href="#ribbon" x="75" fill="#60c6c5"/>
+    <use href="#ribbon" x="88.5" fill="#4da457"/>
+    <use href="#ribbon" x="102" fill="#a8d473"/>
+    <use href="#ribbon" x="115.5" fill="#e1ca68"/>
+    <use href="#ribbon" x="129" fill="#b87842"/>
+    <use href="#ribbon" x="142.5" fill="#8c663e"/>
+    <use href="#ribbon" x="156" fill="#a74949"/>
+    <use href="#ribbon" x="169.5" fill="#cf7777"/>
+    <use href="#ribbon" x="183" fill="#9d62ad"/>
+    <use href="#ribbon" x="196.5" fill="#92999e"/>
+  </g>
 </svg>
